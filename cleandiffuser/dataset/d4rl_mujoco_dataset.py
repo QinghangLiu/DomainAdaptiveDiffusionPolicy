@@ -321,7 +321,7 @@ class RandomMuJoCoSeqDataset(BaseDataset):
 
 
         loader = DataLoader(dataset, batch_size=len(dataset), 
-                            collate_fn=lambda x:collate_fn(x,segment_size = 500), 
+                            collate_fn=lambda x:collate_fn(x,segment_size = 504), 
                             shuffle= True,num_workers=8)
         dataset = next(iter(loader))
         
