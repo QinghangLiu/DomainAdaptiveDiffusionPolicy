@@ -15,7 +15,8 @@ from torch.utils.data import DataLoader
 
 from cleandiffuser.classifier import CumRewClassifier
 from cleandiffuser.dataset.d4rl_mujoco_dataset import  D4RLMuJoCoTDDataset, RandomMuJoCoSeqDataset
-
+from customwrappers.RandomVecEnv import RandomSubprocVecEnv
+from stable_baselines3.common.env_util import make_vec_env
 from cleandiffuser.dataset.dataset_utils import loop_dataloader, loop_two_dataloaders
 from cleandiffuser.diffusion import ContinuousDiffusionSDE, DiscreteDiffusionSDE
 from cleandiffuser.invdynamic import MlpInvDynamic
@@ -81,7 +82,7 @@ def pipeline(args):
     
     if os.path.exists(video_path) is False:
         os.makedirs(video_path)
-    dataset = minari.load_dataset('standard_RandomHalfCheetah-v0')
+    dataset = minari.load_dataset('mix_RandomHalfCheetah-v0')
     # ---------------------- Create Dataset ----------------------
     env = gym.make(args.task.env_name)
     planner_dataset = RandomMuJoCoSeqDataset(
@@ -116,7 +117,8 @@ def pipeline(args):
             planner_dim, model_dim=args.unet_dim, emb_dim=args.unet_dim,
             timestep_emb_type="positional", attention=False, kernel_size=5)
     
-    nn_condition_planner = None
+    nn_condition_planner = MLPCondition(
+                in_dim=obs_dim, out_dim=args.planner_emb_dim, hidden_dims=[args.planner_emb_dim, ], act=nn.SiLU(), dropout=0)
     classifier = None
         
     if args.guidance_type == "MCSS":
@@ -154,11 +156,11 @@ def pipeline(args):
     # ----------------- Masking -------------------
     fix_mask = torch.zeros((args.task.planner_horizon, planner_dim))
     fix_mask[:args.task.history, :] = 1.
-    fix_mask[0, :obs_dim] = 1.
+    fix_mask[args.task.history, :obs_dim] = 1.
 
     loss_weight = torch.ones((args.task.planner_horizon, planner_dim))
     loss_weight[1] = args.planner_next_obs_loss_weight
-    # nn_condition_planner = 
+
     # --------------- Diffusion Model with Classifier-Free Guidance --------------------
     planner = ContinuousDiffusionSDE(
         nn_diffusion_planner, nn_condition=nn_condition_planner,
@@ -235,7 +237,9 @@ def pipeline(args):
                 else:
                     if args.use_weighted_regression:
                         weighted_regression_tensor = torch.exp( (planner_td_val - 1) * args.weight_factor)
-                        log["avg_loss_planner"] += planner.update(planner_horizon_data, weighted_regression_tensor=weighted_regression_tensor)['loss']
+                        log["avg_loss_planner"] += planner.update(planner_horizon_data, 
+                                                                  weighted_regression_tensor=weighted_regression_tensor,
+                                                                  condition = planner_horizon_obs[:,args.task.history,:])['loss']
                     else:
                         log["avg_loss_planner"] += planner.update(planner_horizon_data)['loss']
                 planner_lr_scheduler.step()
@@ -417,14 +421,25 @@ def pipeline(args):
             env_eval = gym.make(args.task.env_name)
             frames = []
         else:
-            env_eval = gym.vector.make(args.task.env_name, args.num_envs)
+            env_eval = make_vec_env(args.task.env_name, n_envs=args.num_envs, seed=None, vec_env_cls=RandomSubprocVecEnv)
+            env_eval.set_task(np.tile(args.domain, (args.num_envs,1)))
+            # env_eval = gym.vector.make(args.task.env_name, args.num_envs)
 
         normalizer = planner_dataset.get_normalizer()
         episode_rewards = []
         history_length = args.task.history  # should be 4
-        obs_history = []
+        
         for i in range(args.num_episodes):
+            obs_history = []
             obs, ep_reward, cum_done, t = env_eval.reset(), 0., 0., 0
+            for _ in range(args.task.history):
+                obs_history.append(torch.concatenate(
+                    (
+                        torch.tensor(normalizer.normalize(obs), device=args.device, dtype=torch.float32),
+                        torch.zeros((args.num_envs,act_dim),device=args.device)
+                        ),
+                    dim = -1
+                     ))
             while not np.all(cum_done) and t < args.task.max_path_length + 1:
                 
                 # 1) generate plan
@@ -434,7 +449,7 @@ def pipeline(args):
                     for h in range(len(obs_history)):
                         history = torch.tensor(obs_history[h], device=args.device, dtype=torch.float32)
                         history_repeat = history.unsqueeze(1).repeat(1,args.planner_num_candidates, 1).view(-1, planner_dim)
-                        planner_prior[:, h, :planner_dim] = torch.tensor(normalizer.normalize(history_repeat[h]), device=args.device, dtype=torch.float32)
+                        planner_prior[:, h, :planner_dim] = history_repeat
 
 
                     obs = torch.tensor(normalizer.normalize(obs), device=args.device, dtype=torch.float32)
@@ -442,10 +457,11 @@ def pipeline(args):
 
                     # sample trajectories
                     planner_prior[:, len(obs_history), :obs_dim] = obs_repeat
+                    # print(planner_prior)
                     traj, log = planner.sample(
                         planner_prior, solver=args.planner_solver,
                         n_samples=args.num_envs * args.planner_num_candidates, sample_steps=args.planner_sampling_steps, use_ema=args.planner_use_ema,
-                        condition_cfg=None, w_cfg=1.0, temperature=args.task.planner_temperature)
+                        condition_cfg=obs_repeat, w_cfg=1.0, temperature=args.task.planner_temperature,)
                     
                     # resample
                     with torch.no_grad():
@@ -514,21 +530,20 @@ def pipeline(args):
                         # inverse dynamic
                         with torch.no_grad():
                             act = invdyn.predict(obs, traj[:, 1, :]).cpu().numpy()
+                    obs_history.append(obs)
                 else:
-                    act = traj[:, 0, obs_dim:]
+                    act = traj[:, len(obs_history), obs_dim:]
+                    obs_history.append(torch.concatenate((obs,act), dim=-1))
                     act = act.cpu().numpy()
-                    
+
+
+                if len(obs_history) > history_length:
+                    obs_history.pop(0)
                 # step
                 if args.plot:
                     frame = env_eval.render(mode = "rgb_array")
                     frames.append(frame)
-
-                if args.pipeline_type == "separate":
-                    obs_history.append(obs)
-                else:
-                    obs_history.append(torch.concatenate((obs,act), dim=-1))
-                if len(obs_history) > history_length:
-                    obs_history.pop(0)
+                # print(obs,act)
                 obs, rew, done, info = env_eval.step(act)
 
 
@@ -540,9 +555,7 @@ def pipeline(args):
                 print(f'[t={t}] rew: {np.around((rew * (1 - cum_done)), 2)}')
 
             episode_rewards.append(ep_reward)
-
-        episode_rewards = [list(r) for r in episode_rewards]
-        episode_rewards = np.array(episode_rewards).reshape(-1) * 100
+        episode_rewards = np.array(episode_rewards).reshape(-1)
         mean = np.mean(episode_rewards)
         err = np.std(episode_rewards) / np.sqrt(len(episode_rewards))
         print(mean, err)
@@ -566,8 +579,8 @@ def pipeline(args):
 if __name__ == "__main__":
     task_parser = argparse.ArgumentParser()
     task_parser.add_argument('--env_name', type=str, default="RandomHalfCheetah-v0", help='Environment name')
-    task_parser.add_argument('--planner_horizon', type=int, default=8, help='Planner horizon')
-    task_parser.add_argument('--history', type=int, default=4, help='History trajectory')
+    task_parser.add_argument('--planner_horizon', type=int, default=20, help='Planner horizon')
+    task_parser.add_argument('--history', type=int, default=16, help='History trajectory')
 
     task_parser.add_argument('--stride', type=int, default=1, help='Stride for the dataset')
     task_parser.add_argument('--max_path_length', type=int, default=1000, help='Maximum path length')
@@ -577,7 +590,7 @@ if __name__ == "__main__":
     task = task_parser.parse_args()
 
     parser = argparse.ArgumentParser()
-    parser.add_argument('--pipeline_name',      default="veteran_random_mujoco", type=str, help='Pipeline name')
+    parser.add_argument('--pipeline_name',      default="veteran_random_mujoco_mixed_dynamics", type=str, help='Pipeline name')
     parser.add_argument('--mode',               default="inference", type=str, help='Mode: train/inference/etc')
     parser.add_argument('--seed',               default=0, type=int, help='Random seed')
     parser.add_argument('--device',             default="cuda:0", type=str, help='Device to use')
@@ -597,12 +610,12 @@ if __name__ == "__main__":
     parser.add_argument('--terminal_penalty',   default=0, type=float, help='Terminal penalty')
     parser.add_argument('--full_traj_bonus',    default=0, type=float, help='Full trajectory bonus')
     parser.add_argument('--discount',           default=0.997, type=float, help='Discount factor')
-
+    parser.add_argument('--domain',           default=np.array([2,7,7,7,7,7,7,1.8]), help='Dynamics')
     # Planner Config
     parser.add_argument('--planner_solver',             default="ddim", type=str, help='Planner solver')
-    parser.add_argument('--planner_emb_dim',            default=128, type=int, help='Planner embedding dimension')
+    parser.add_argument('--planner_emb_dim',            default=256, type=int, help='Planner embedding dimension')
     parser.add_argument('--planner_d_model',            default=256, type=int, help='Planner model dimension')
-    parser.add_argument('--planner_depth',              default=2, type=int, help='Planner depth')
+    parser.add_argument('--planner_depth',              default=3, type=int, help='Planner depth')
     parser.add_argument('--planner_sampling_steps',     default=20, type=int, help='Planner sampling steps')
     parser.add_argument('--planner_predict_noise',      default=True, type=bool, help='Planner predict noise')
     parser.add_argument('--planner_next_obs_loss_weight', default=1, type=float, help='Planner next obs loss weight')
@@ -631,8 +644,8 @@ if __name__ == "__main__":
     parser.add_argument('--save_interval',              default=100000, type=int, help='Save interval')
 
     # Inference
-    parser.add_argument('--num_envs',                   default=50, type=int, help='Number of environments')
-    parser.add_argument('--num_episodes',               default=3, type=int, help='Number of episodes')
+    parser.add_argument('--num_envs',                   default=10, type=int, help='Number of environments')
+    parser.add_argument('--num_episodes',               default=1, type=int, help='Number of episodes')
     parser.add_argument('--planner_num_candidates',     default=50, type=int, help='Planner number of candidates')
     parser.add_argument('--planner_ckpt',               default=1000000, type=int, help='Planner checkpoint')
     parser.add_argument('--critic_ckpt',                default=200000, type=int, help='Critic checkpoint')
