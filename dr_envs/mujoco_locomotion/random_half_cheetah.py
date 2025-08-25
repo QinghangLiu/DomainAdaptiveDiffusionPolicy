@@ -43,7 +43,7 @@ class RandomHalfCheetah(MujocoEnv, utils.EzPickle):
 
         self.mean_task = np.zeros(self.task_dim)
         self.stdev_task = np.zeros(self.task_dim)
-
+        self.observation_space = gym.spaces.Box(-10e5, 10e5, shape=(17,), dtype=np.float32)
         self.dyn_ind_to_name = {0: 'torso', 1: 'bthigh', 2: 'bshin', 3: 'bfoot', 4: 'fthigh', 5: 'fshin', 6: 'ffoot', 7: 'friction' }
 
         self.preferred_lr = 0.0005 # --algo Sac -t 5M
