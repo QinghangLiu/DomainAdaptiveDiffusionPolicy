@@ -153,12 +153,12 @@ def pipeline(args):
 
     # ----------------- Masking -------------------
     fix_mask = torch.zeros((args.task.planner_horizon, planner_dim))
-    # fix_mask[:args.task.history, :] = 1.
+    fix_mask[:args.task.history, :] = 1.
     fix_mask[0, :obs_dim] = 1.
 
     loss_weight = torch.ones((args.task.planner_horizon, planner_dim))
     loss_weight[1] = args.planner_next_obs_loss_weight
-
+    # nn_condition_planner = 
     # --------------- Diffusion Model with Classifier-Free Guidance --------------------
     planner = ContinuousDiffusionSDE(
         nn_diffusion_planner, nn_condition=nn_condition_planner,
@@ -434,7 +434,7 @@ def pipeline(args):
                     for h in range(len(obs_history)):
                         history = torch.tensor(obs_history[h], device=args.device, dtype=torch.float32)
                         history_repeat = history.unsqueeze(1).repeat(1,args.planner_num_candidates, 1).view(-1, planner_dim)
-                        planner_prior[:, h, :planner_dim] = torch.tensor(normalizer.normalize(obs_history[h]), device=args.device, dtype=torch.float32)
+                        planner_prior[:, h, :planner_dim] = torch.tensor(normalizer.normalize(history_repeat[h]), device=args.device, dtype=torch.float32)
 
 
                     obs = torch.tensor(normalizer.normalize(obs), device=args.device, dtype=torch.float32)
@@ -578,7 +578,7 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
     parser.add_argument('--pipeline_name',      default="veteran_random_mujoco", type=str, help='Pipeline name')
-    parser.add_argument('--mode',               default="train", type=str, help='Mode: train/inference/etc')
+    parser.add_argument('--mode',               default="inference", type=str, help='Mode: train/inference/etc')
     parser.add_argument('--seed',               default=0, type=int, help='Random seed')
     parser.add_argument('--device',             default="cuda:0", type=str, help='Device to use')
     parser.add_argument('--project',            default="Default", type=str, help='Wandb project name')
