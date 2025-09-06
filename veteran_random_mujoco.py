@@ -82,7 +82,7 @@ def pipeline(args):
     
     if os.path.exists(video_path) is False:
         os.makedirs(video_path)
-    dataset = minari.load_dataset('mix_RandomHalfCheetah-v0')
+    dataset = minari.load_dataset('mixdyna_RandomWalker2d-v0')
     # ---------------------- Create Dataset ----------------------
     env = gym.make(args.task.env_name)
     planner_dataset = RandomMuJoCoSeqDataset(
@@ -188,11 +188,18 @@ def pipeline(args):
     if args.mode == "train":
         # Planner
         planner_lr_scheduler = CosineAnnealingLR(planner.optimizer, args.planner_diffusion_gradient_steps)
+        if os.path.exists(save_path + f"planner_ckpt_latest.pt"):
+            planner.load(save_path + f"planner_ckpt_latest.pt")
+            print(f"Load planner from {save_path + f'planner_ckpt_latest.pt'}")
         planner.train()
         
         # Critic or classifier
         if args.guidance_type=="MCSS":
             critic_lr_scheduler = CosineAnnealingLR(critic_optim, args.planner_diffusion_gradient_steps)
+            if os.path.exists(save_path + f"critic_ckpt_latest.pt"):
+                critic_ckpt = torch.load(save_path + f"critic_ckpt_latest.pt")
+                critic.load_state_dict(critic_ckpt["critic"])
+                print(f"Load critic from {save_path + f'critic_ckpt_latest.pt'}")
             critic.train()
         elif args.guidance_type=="cg":
             classifier_lr_scheduler = CosineAnnealingLR(planner.classifier.optim, args.planner_diffusion_gradient_steps)
@@ -200,11 +207,19 @@ def pipeline(args):
         
         # Policy
         if args.pipeline_type=="separate":
+
+                
             if args.use_diffusion_invdyn:
                 policy_lr_scheduler = CosineAnnealingLR(policy.optimizer, args.policy_diffusion_gradient_steps)
+                if os.path.exists(save_path + f"policy_ckpt_latest.pt"):
+                    policy.load(save_path + f"policy_ckpt_latest.pt")
+                    print(f"Load policy from {save_path + f'policy_ckpt_latest.pt'}")
                 policy.train()
             else:
                 invdyn_lr_scheduler = CosineAnnealingLR(invdyn.optim, args.invdyn_gradient_steps)
+                if os.path.exists(save_path + f"invdyn_ckpt_latest.pt"):
+                    invdyn.load(save_path + f"invdyn_ckpt_latest.pt")
+                    print(f"Load inverse dynamics from {save_path + f'invdyn_ckpt_latest.pt'}")
                 invdyn.train()
 
         n_gradient_step = 0
@@ -417,12 +432,11 @@ def pipeline(args):
                     invdyn.eval()
                     
         
-        if args.plot:
-            env_eval = gym.make(args.task.env_name)
-            frames = []
-        else:
-            env_eval = make_vec_env(args.task.env_name, n_envs=args.num_envs, seed=None, vec_env_cls=RandomSubprocVecEnv)
-            env_eval.set_task(np.tile(args.domain, (args.num_envs,1)))
+
+        env_eval = make_vec_env(args.task.env_name, n_envs=args.num_envs, seed=None, vec_env_cls=RandomSubprocVecEnv)
+        # env_eval.set_task(np.tile(args.domain, (args.num_envs,1)))
+        print(env_eval.get_task())
+        frames = []
             # env_eval = gym.vector.make(args.task.env_name, args.num_envs)
 
         normalizer = planner_dataset.get_normalizer()
@@ -541,11 +555,15 @@ def pipeline(args):
                     obs_history.pop(0)
                 # step
                 if args.plot:
-                    frame = env_eval.render(mode = "rgb_array")
+                    images = env_eval.get_images()
+                    frame = np.concatenate([
+                    np.concatenate(images[:5], axis=1),   # first row (5 images side by side)
+                    np.concatenate(images[5:], axis=1)    # second row (5 images side by side)
+                ], axis=0)  
                     frames.append(frame)
                 # print(obs,act)
                 obs, rew, done, info = env_eval.step(act)
-
+                
 
 
                 t += 1
@@ -563,22 +581,23 @@ def pipeline(args):
         if args.enable_wandb:
             wandb.log({'Mean Reward': mean, 'Error': err})
             wandb.finish()
-
+        if args.plot:
         # Save video
 
-        video_path = f"{args.video_save_path}/{args.task.env_name}"
-        if not os.path.exists(video_path):
-            os.makedirs(video_path)
-        task_str = "_".join(map(str, np.array(args.task).flatten()))
-        timestamp = time.strftime("%Y%m%d-%H%M%S")
-        imageio.mimsave(f"{video_path}/evaluation{timestamp}_task{task_str}.gif", frames, fps=30)
+            video_path = f"{args.video_save_path}/{args.task.env_name}"
+            if not os.path.exists(video_path):
+                os.makedirs(video_path)
+            task_str = "_".join(map(str, np.array(args.task).flatten()))
+            timestamp = time.strftime("%Y%m%d-%H%M%S")
+            frames_resized = [frame[::4, ::4] for frame in frames]  # downscale by 2
+            imageio.mimsave(f"{video_path}/evaluation{timestamp}_task{task_str}.gif", frames_resized, fps=30)
     else:
         raise ValueError(f"Invalid mode: {args.mode}")
 
 
 if __name__ == "__main__":
     task_parser = argparse.ArgumentParser()
-    task_parser.add_argument('--env_name', type=str, default="RandomHalfCheetah-v0", help='Environment name')
+    task_parser.add_argument('--env_name', type=str, default="RandomWalker2d-v0", help='Environment name')
     task_parser.add_argument('--planner_horizon', type=int, default=20, help='Planner horizon')
     task_parser.add_argument('--history', type=int, default=16, help='History trajectory')
 
@@ -590,8 +609,8 @@ if __name__ == "__main__":
     task = task_parser.parse_args()
 
     parser = argparse.ArgumentParser()
-    parser.add_argument('--pipeline_name',      default="veteran_random_mujoco_mixed_dynamics", type=str, help='Pipeline name')
-    parser.add_argument('--mode',               default="inference", type=str, help='Mode: train/inference/etc')
+    parser.add_argument('--pipeline_name',      default="veteran_random_mujoco_multi_mixed_dynamics", type=str, help='Pipeline name')
+    parser.add_argument('--mode',               default="train", type=str, help='Mode: train/inference/etc')
     parser.add_argument('--seed',               default=0, type=int, help='Random seed')
     parser.add_argument('--device',             default="cuda:0", type=str, help='Device to use')
     parser.add_argument('--project',            default="Default", type=str, help='Wandb project name')
@@ -607,10 +626,10 @@ if __name__ == "__main__":
     parser.add_argument('--rebase_policy',      default=False, type=bool, help='Rebase policy position')
 
     # Environment
-    parser.add_argument('--terminal_penalty',   default=0, type=float, help='Terminal penalty')
+    parser.add_argument('--terminal_penalty',   default=-100, type=float, help='Terminal penalty')
     parser.add_argument('--full_traj_bonus',    default=0, type=float, help='Full trajectory bonus')
     parser.add_argument('--discount',           default=0.997, type=float, help='Discount factor')
-    parser.add_argument('--domain',           default=np.array([2,7,7,7,7,7,7,1.8]), help='Dynamics')
+    parser.add_argument('--domain',           default=np.array([4,4,4,4,4,4,4,1.2]), help='Dynamics')
     # Planner Config
     parser.add_argument('--planner_solver',             default="ddim", type=str, help='Planner solver')
     parser.add_argument('--planner_emb_dim',            default=256, type=int, help='Planner embedding dimension')
@@ -647,14 +666,14 @@ if __name__ == "__main__":
     parser.add_argument('--num_envs',                   default=10, type=int, help='Number of environments')
     parser.add_argument('--num_episodes',               default=1, type=int, help='Number of episodes')
     parser.add_argument('--planner_num_candidates',     default=50, type=int, help='Planner number of candidates')
-    parser.add_argument('--planner_ckpt',               default=1000000, type=int, help='Planner checkpoint')
-    parser.add_argument('--critic_ckpt',                default=200000, type=int, help='Critic checkpoint')
-    parser.add_argument('--policy_ckpt',                default=1000000, type=int, help='Policy checkpoint')
+    parser.add_argument('--planner_ckpt',               default=800000, type=int, help='Planner checkpoint')
+    parser.add_argument('--critic_ckpt',                default=800000, type=int, help='Critic checkpoint')
+    parser.add_argument('--policy_ckpt',                default=800000, type=int, help='Policy checkpoint')
     parser.add_argument('--invdyn_ckpt',                default=200000, type=int, help='Inverse dynamics checkpoint')
     parser.add_argument('--planner_use_ema',            default=True, type=bool, help='Planner use EMA')
     parser.add_argument('--policy_temperature',         default=0.5, type=float, help='Policy temperature')
     parser.add_argument('--policy_use_ema',             default=True, type=bool, help='Policy use EMA')
-    parser.add_argument('--plot',    default=False, type=bool, help='Planner use true reward')
+    parser.add_argument('--plot',    default=True, type=bool, help='Planner use true reward')
     parser.add_argument('--video_save_path',default="./video", help='Path to save video')
     # Value
     parser.add_argument('--value_type',                 default="ev", type=str, help='Value type')

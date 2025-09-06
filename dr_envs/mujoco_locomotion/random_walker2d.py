@@ -122,6 +122,7 @@ class RandomWalker2dEnv(MujocoEnv, utils.EzPickle):
         reward -= 1e-3 * np.square(a).sum()
         done = not (height > 0.8 and height < 2.0 and
                     ang > -1.0 and ang < 1.0)
+
         ob = self._get_obs()
 
         return ob, reward, done, {}
@@ -164,13 +165,13 @@ class RandomWalker2dEnv(MujocoEnv, utils.EzPickle):
 gym.envs.register(
         id="RandomWalker2d-v0",
         entry_point="%s:RandomWalker2dEnv" % __name__,
-        max_episode_steps=500
+        max_episode_steps=1000
 )
 
 gym.envs.register(
         id="RandomWalker2dNoisy-v0",
         entry_point="%s:RandomWalker2dEnv" % __name__,
-        max_episode_steps=500,
+        max_episode_steps=1000,
         kwargs={"noisy": True}
 )
 
