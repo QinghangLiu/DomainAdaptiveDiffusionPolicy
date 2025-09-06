@@ -36,7 +36,7 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
     parser.add_argument('--algo',           default="sac", type=str, help='Algorithm to use')
-    parser.add_argument('--env',            default="RandomWalker2d-v0", type=str, help='Train gym env')
+    parser.add_argument('--env',            default="RandomHumanoid-v0", type=str, help='Train gym env')
     parser.add_argument('--lr',             default=None, type=float, help='Learning rate')
     parser.add_argument('--gamma',          default=0.99, type=float, help='gamma discount factor')
     parser.add_argument('--now',            default=16, type=int, help='Number of cpus for parallelization')

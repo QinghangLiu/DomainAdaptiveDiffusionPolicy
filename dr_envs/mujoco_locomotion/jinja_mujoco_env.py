@@ -67,6 +67,7 @@ class MujocoEnv(RandomEnv):
         self.init_qvel = self.sim.data.qvel.ravel().copy()
 
         self._set_action_space()
+        self.endless = True
 
         action = self.action_space.sample()
         observation, _reward, done, _info = self.step(action)
