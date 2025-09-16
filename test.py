@@ -36,27 +36,33 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
     parser.add_argument('--algo',           default="sac", type=str, help='Algorithm to use')
-    parser.add_argument('--env',            default="RandomHumanoid-v0", type=str, help='Train gym env')
+    parser.add_argument('--env',            default="RandomWalker2d-v0", type=str, help='Train gym env')
     parser.add_argument('--lr',             default=None, type=float, help='Learning rate')
     parser.add_argument('--gamma',          default=0.99, type=float, help='gamma discount factor')
-    parser.add_argument('--now',            default=16, type=int, help='Number of cpus for parallelization')
+    parser.add_argument('--now',            default=20, type=int, help='Number of cpus for parallelization')
     parser.add_argument('--gradient_steps', default=4, type=int, help='Number of gradient steps per update')
-    parser.add_argument('--model_path',     default="./best_model/best_model_heavy.zip", help='Train from scratch')
-    parser.add_argument('--mode',           default="train_and_data", help='Evaluate the policy')
+    parser.add_argument('--model_path',     default="./best_model/", help='Train from scratch')
+    parser.add_argument('--mode',           default="data", help='Evaluate the policy')
     parser.add_argument('--task',           default=np.array([8,7,7,7,7,7,7,0.9,0.78,0.2,0.9,2.4,0.8]), help='Use wandb for logging')
     parser.add_argument('--video_save_path',default="./video", help='Path to save video')
     parser.add_argument('--data_collect_episode',            default=300, type=int, help='Number of cpus for parallelization')
+    parser.add_argument('--gpu',           default=0, type=int, help='Random seed')
     args = parser.parse_args()
     env = gym.make(args.env)
     default_task = env.get_task()
+    bound = np.zeros((env.dyn_ind_to_name.__len__(),2))
+    for i in range(env.dyn_ind_to_name.__len__()):
+        bound[i,:] = np.array(env.get_search_bounds_mean(i))
+    series_task = np.linspace(bound[:,0],bound[:,1], 5)
+
+    model_save_path = f"./best_model/{args.env}/"
     # series_task = default_task.copy()
 
-    default_task[9] = 0.2
-    default_task[11] = 0.6
+  
 
     # series_task = np.vstack([series_task,np.linspace(default_task,args.task, 10)])
-    series_task = [args.task]
-    task = args.task
+
+
 
     # print(env.get_task())
     # env.set_task(*task)
@@ -65,28 +71,31 @@ if __name__ == "__main__":
     # par_env.set_task(np.tile(task, (args.now,1)))
     eff_lr = get_learning_rate(args, par_env)
     timestamp = time.strftime("%Y%m%d-%H%M%S")
+    model = SAC("MlpPolicy", par_env, learning_rate=eff_lr, gamma=args.gamma, gradient_steps=args.gradient_steps, verbose=1, device=f"cuda:{args.gpu}" if torch.cuda.is_available() else "cpu")
+    # if os.path.exists(args.model_path):
+    #     # agent = Policy(algo=args.algo,
+    #     #         env=par_env,
+    #     #         lr=eff_lr,
+    #     #         gamma=args.gamma,
+    #     #         load_from_pathname=args.model_path,
+    #     #         gradient_steps= args.gradient_steps,
+    #     #         device="cuda"if  torch.cuda.is_available() else "cpu",     
+    #     #                     )
+    #     model = SAC.load(args.model_path, env=par_env, device=f"cuda:{args.gpu}" if torch.cuda.is_available() else "cpu")
+    # else:
+    #     # agent = Policy(algo=args.algo,
+    #     #         env=par_env,
+    #     #         lr=eff_lr,
+    #     #         gamma=args.gamma,
+    #     #         gradient_steps= args.gradient_steps,
+    #     #         device="cuda"if  torch.cuda.is_available() else "cpu",)     
+    #     model = SAC("MlpPolicy", par_env, learning_rate=eff_lr, gamma=args.gamma, gradient_steps=args.gradient_steps, verbose=1, device=f"cuda:{args.gpu}" if torch.cuda.is_available() else "cpu")
 
-    if os.path.exists(args.model_path):
-        # agent = Policy(algo=args.algo,
-        #         env=par_env,
-        #         lr=eff_lr,
-        #         gamma=args.gamma,
-        #         load_from_pathname=args.model_path,
-        #         gradient_steps= args.gradient_steps,
-        #         device="cuda"if  torch.cuda.is_available() else "cpu",     
-        #                     )
-        model = SAC.load(args.model_path, env=par_env, device="cuda" if torch.cuda.is_available() else "cpu")
-    else:
-        # agent = Policy(algo=args.algo,
-        #         env=par_env,
-        #         lr=eff_lr,
-        #         gamma=args.gamma,
-        #         gradient_steps= args.gradient_steps,
-        #         device="cuda"if  torch.cuda.is_available() else "cpu",)     
-        model = SAC("MlpPolicy", par_env, learning_rate=eff_lr, gamma=args.gamma, gradient_steps=args.gradient_steps, verbose=1, device="cuda" if torch.cuda.is_available() else "cpu")
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    print(device)
+
+
     if args.mode == "eval":
+        
+        model = SAC.load(f"./best_model/best_model_{args.env}_{np.zeros((len(default_task),))}.zip", env=par_env, device=f"cuda:{args.gpu}" if torch.cuda.is_available() else "cpu")
 
         accu_reward = 0
         frames = []
@@ -148,25 +157,26 @@ if __name__ == "__main__":
         task_str = "_".join(map(str, np.array(args.task).flatten()))
         imageio.mimsave(f"{video_path}/evaluation{timestamp}_task{task_str}.gif", frames, fps=30)
     elif args.mode == "data":
-
+        model = SAC.load(f"./best_model/best_model_{args.env}_{default_task[:6]}.zip", env=par_env, device=f"cuda:{args.gpu}" if torch.cuda.is_available() else "cpu")
         # env = DataCollector(env)
         episodes = []
-        while len(episodes) < args.data_collect_episode:
+        for _ in range(args.data_collect_episode // args.now):
             obss = np.empty((args.now,0, par_env.observation_space.shape[0]))
             actions = np.empty((args.now,0, par_env.action_space.shape[0]))
             rewards = np.empty((args.now,0))
-
-            done = np.zeros(args.now, dtype=bool)
+            terminations = np.empty((args.now,0))
+            cum_done = 0
+            accu_rewards = np.zeros((args.now,))
             obs = par_env.reset()
-            random_action = 0
+            # random_action = 0
             for _ in range(16):
-                action = np.random.uniform(low = -1,high = 1,size = (args.now,par_env.action_space.shape[0]))
+                action = np.zeros((args.now,par_env.action_space.shape[0]))
                 obss = np.append(obss, obs[:, np.newaxis, :], axis=1)
-                obs,reward,_,_ = par_env.step(action)
+                # obs,reward,done,_ = par_env.step(action)
                 actions = np.append(actions,action[:,np.newaxis,:], axis = 1)
                 rewards = np.append(rewards, np.zeros(args.now)[:, np.newaxis], axis=1)
-                
-            for _ in range(500):
+                terminations = np.append(terminations, np.zeros(args.now)[:, np.newaxis], axis=1)
+            for _ in range(1000):
                 
                 # if np.random.rand() < 0.02 and random_action == 0:
                 #     random_action = 4
@@ -180,14 +190,17 @@ if __name__ == "__main__":
                 actions = np.append(actions, action[:, np.newaxis, :], axis=1)
                 obs, reward, done, info = par_env.step(action)
                 rewards = np.append(rewards, reward[:, np.newaxis], axis=1)
-            accu_rewards = rewards.sum(axis = 1)
+                terminations = np.append(terminations,done[:, np.newaxis], axis=1)
+                cum_done = done if cum_done is None else np.logical_or(cum_done, done)
+                accu_rewards += reward * (1 - cum_done)
+
             print(accu_rewards)
             print(accu_rewards.mean())
 
             print(accu_rewards.std())
             for j in range(args.now):
 
-                terminations = np.zeros(obss.shape[1])
+                
                 truncations = np.zeros(obss.shape[1])
 
                 truncations[-1] = 1
@@ -197,22 +210,39 @@ if __name__ == "__main__":
                                                 observations=obss[j],
                                                 actions=actions[j],
                                                 rewards=rewards[j],
-                                                terminations = terminations,
+                                                terminations = terminations[j],
                                                 truncations = truncations,
                                                 infos = infos))
             print(f"Episode {len(episodes)} collected with {obss[j].shape[0]} timesteps")
-        dataset = minari.create_dataset_from_buffers(f'heavy_{args.env}',
+        dataset = minari.create_dataset_from_buffers(f'defaultdyna_{args.env}',
                                                      buffer = episodes,
                                                      observation_space=gymnasium.spaces.Box(low=-10, high=10, shape=(17,)),
                                                      action_space=gymnasium.spaces.Box(low=-1.0, high=1.0, shape=(6,)))
     elif args.mode == "train_and_data":
         episodes = []
-        for task in series_task:
+        task_num = 1
+        trained_task = []
+        
+        for i in range(task_num):
+            
+            if not os.exists(f"./best_model/best_model_{args.env}_{np.zeros((len(default_task),))}.zip"):
+                task = default_task
+                task_index = np.zeros((len(default_task),))
+            else:
+                task = series_task[task_index,np.arange(len(default_task))]
+                task_index = np.random.choice(np.arange(1,series_task.shape[0]-1), size=len(default_task), replace=True)
+                
+            trained_task.append(task)
+
             
 
-            env.set_task(*task)
             par_env.set_task(np.tile(task, (args.now,1)))
             print(f"Training on task: {task}")
+            model.learn(
+                            total_timesteps=200000,
+                            log_interval=10,
+
+                            )
             max_reward = 0.01
 
             cnt_accureward = 0
@@ -228,7 +258,7 @@ if __name__ == "__main__":
             while not (0 < (cnt_accureward - max_reward)/max_reward < 1e-2):
                 max_reward = max(max_reward,cnt_accureward)
                 model.learn(
-                            total_timesteps=40000,
+                            total_timesteps=100000,
                             log_interval=10,
 
                             )
@@ -249,9 +279,9 @@ if __name__ == "__main__":
                 print(cnt_accureward)
 
 
-            model.save(f"./best_model/best_model_{args.env}_{task}.zip")
-            #clear the replay buffer
-            model = SAC.load(f"./best_model/best_model_{args.env}_{task}.zip", env=par_env, device="cuda" if torch.cuda.is_available() else "cpu")
+                model.save(f"./best_model/best_model_{args.env}_{str(task_index)}.zip")
+            # clear the replay buffer
+            model = SAC.load(f"./best_model/best_model_{args.env}_{str(task_index)}.zip", env=par_env, device=f"cuda:{args.gpu}" if torch.cuda.is_available() else "cpu")
             print(f"Collecting data on task: {task}")
             for _ in range(args.data_collect_episode // args.now):
                 obss = np.empty((args.now,0, par_env.observation_space.shape[0]))
@@ -260,7 +290,7 @@ if __name__ == "__main__":
                 terminations = np.empty((args.now,0))
 
                 obs = par_env.reset()
-                random_action = 0
+                # random_action = 0
                 for _ in range(16):
                     action = np.random.uniform(low = -1,high = 1,size = (args.now,par_env.action_space.shape[0]))
                     obss = np.append(obss, obs[:, np.newaxis, :], axis=1)
@@ -268,7 +298,7 @@ if __name__ == "__main__":
                     actions = np.append(actions,action[:,np.newaxis,:], axis = 1)
                     rewards = np.append(rewards, np.zeros(args.now)[:, np.newaxis], axis=1)
                     terminations = np.append(terminations, done[:, np.newaxis], axis=1)
-                for _ in range(500):
+                for _ in range(1000):
                     
                     # if np.random.rand() < 0.02 and random_action == 0:
                     #     random_action = 4
@@ -304,11 +334,14 @@ if __name__ == "__main__":
                                                     truncations = truncations,
                                                     infos = infos))
                 print(f"Episode {len(episodes)} collected with {obss[j].shape[0]} timesteps")
-        dataset = minari.create_dataset_from_buffers(f'mixdyna2_{args.env}',
+                np.save(f"./best_model/trained_tasks_{args.env}_{timestamp}.npy", np.array(trained_task))
+        dataset = minari.create_dataset_from_buffers(f'defaultDyna_{args.env}',
                                                      buffer = episodes,
                                                      observation_space=gymnasium.spaces.Box(low=-10, high=10, shape=(17,)),
                                                      action_space=gymnasium.spaces.Box(low=-1.0, high=1.0, shape=(6,)))
         model.save(args.model_path)
+        #save the trained tasks
+        
 
 
 

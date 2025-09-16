@@ -32,8 +32,7 @@ dependencies = [
     "opencv-python",
     "imagecodecs",
     "torch==2.0.1",
-    "torchvision",
-]
+    "torchvision",]
 
 [tool.setuptools.dynamic]
 dependencies = {file = ["requirements.txt"]}

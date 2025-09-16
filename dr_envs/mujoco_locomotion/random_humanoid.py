@@ -172,8 +172,7 @@ class RandomHumanoidEnv(MujocoEnv, utils.EzPickle):
             qpos = self.sim.data.qpos
             done = bool((qpos[2] < 1.0) or (qpos[2] > 2.0))
 
-            if self.endless:
-                done = False
+
 
             return (
                 self._get_obs(),
@@ -273,12 +272,12 @@ class RandomHumanoidEnv(MujocoEnv, utils.EzPickle):
 gym.envs.register(
         id="RandomHumanoid-v0",
         entry_point="%s:RandomHumanoidEnv" % __name__,
-        max_episode_steps=500
+        max_episode_steps=1000
 )
 
 gym.envs.register(
         id="RandomHumanoidNoisy-v0",
         entry_point="%s:RandomHumanoidEnv" % __name__,
-        max_episode_steps=500,
+        max_episode_steps=1000,
         kwargs={"noisy": True}
 )

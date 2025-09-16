@@ -321,7 +321,7 @@ class RandomMuJoCoSeqDataset(BaseDataset):
 
 
         loader = DataLoader(dataset, batch_size=len(dataset), 
-                            collate_fn=lambda x:collate_fn(x,segment_size = 516), 
+                            collate_fn=lambda x:collate_fn(x,segment_size = 1016),
                             shuffle= True,num_workers=8)
         dataset = next(iter(loader))
         
@@ -351,6 +351,7 @@ class RandomMuJoCoSeqDataset(BaseDataset):
         path_idx = 0
         for i in range(timeouts.shape[0]):
             if timeouts[i] or terminals[i] or i == timeouts.shape[0] - 1:
+
                 path_length = i - ptr + 1
                 assert path_length <= max_path_length, f"current path length {path_length}"
 
