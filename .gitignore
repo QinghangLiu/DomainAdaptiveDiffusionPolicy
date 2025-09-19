@@ -37,3 +37,6 @@ best_model/replay_buffer.pkl
 dev/kitchen/observations_seq.npy
 diffusion.pt
 best_model/
+results/
+video/
+video_outputs/

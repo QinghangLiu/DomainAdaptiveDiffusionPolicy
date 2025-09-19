@@ -3,7 +3,7 @@ from typing import Optional, Union, Callable, Dict
 import numpy as np
 import torch
 import torch.nn as nn
-
+import lap
 from cleandiffuser.classifier import BaseClassifier
 from cleandiffuser.nn_condition import BaseNNCondition
 from cleandiffuser.nn_diffusion import BaseNNDiffusion
@@ -68,8 +68,7 @@ class BaseDiffusionSDE(DiffusionModel):
             predict_noise: bool = True,
 
             device: Union[torch.device, str] = "cpu",
-            task_num = None,
-            guide_noise_scale = 0.01,
+
             
             
     ):
@@ -82,8 +81,7 @@ class BaseDiffusionSDE(DiffusionModel):
         self.x_max = x_max.to(device) if isinstance(x_max, torch.Tensor) else x_max
         self.x_min = x_min.to(device) if isinstance(x_min, torch.Tensor) else x_min
 
-        if task_num is not None:
-            self.guide_noise = np.load("trained_tasks_RandomWalker2d-v0_20250919-210548.npy")[:task_num] * guide_noise_scale
+
         
 
     @property
@@ -107,7 +105,6 @@ class BaseDiffusionSDE(DiffusionModel):
         else:
             xt, t, eps = self.add_noise(x0)
         condition = self.model["condition"](condition) if condition is not None else None
-
         if self.predict_noise:
             loss = (self.model["diffusion"](xt, t, condition) - eps) ** 2
         else:
@@ -707,12 +704,11 @@ class ContinuousDiffusionSDE(BaseDiffusionSDE):
             predict_noise: bool = True,
 
             device: Union[torch.device, str] = "cpu",
-            task_num: int = None,
-            guide_noise_scale: float = 0.01,
+
     ):
         super().__init__(
             nn_diffusion, nn_condition, fix_mask, loss_weight, classifier, grad_clip_norm, ema_rate, optim_params,
-            epsilon, noise_schedule, noise_schedule_params, x_max, x_min, predict_noise, device, task_num, guide_noise_scale)
+            epsilon, noise_schedule, noise_schedule_params, x_max, x_min, predict_noise, device, )
 
         # ==================== Continuous Time-step Range ====================
         if noise_schedule == "cosine":
@@ -741,11 +737,16 @@ class ContinuousDiffusionSDE(BaseDiffusionSDE):
              (self.t_diffusion[1] - self.t_diffusion[0]) + self.t_diffusion[0]) if t is None else t
 
         eps = torch.randn_like(x0) if eps is None else eps
-        if task_id is not None and self.guide_noise is not None:
-            eps = eps + self.guide_noise[task_id.squeeze(-1).int(), ...]
+
         alpha, sigma = self.noise_schedule_funcs["forward"](t, **(self.noise_schedule_params or {}))
         alpha = at_least_ndim(alpha, x0.dim())
         sigma = at_least_ndim(sigma, x0.dim())
+
+
+        dist = torch.cdist(x0.view(x0.shape[0], -1)[:,:385],eps.view(eps.shape[0], -1)[:,385:])
+        _,_,y = lap.lapjv(dist.cpu().numpy(), extend_cost=True)
+        eps = eps[y]
+
 
         xt = alpha * x0 + sigma * eps
         xt = (1. - self.fix_mask) * xt + self.fix_mask * x0

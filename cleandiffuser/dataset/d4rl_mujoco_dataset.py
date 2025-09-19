@@ -49,7 +49,10 @@ def collate_fn(batch,segment_size = 8):
         )[:,i:i+segment_size],
         "truncations": np.array(
             [x.truncations for x in batch]
-        )[:,i:i+segment_size]
+        )[:,i:i+segment_size],
+        "infos": 
+            [x.infos for x in batch]
+         if batch[0].infos is not None else None,
     }
 
 class DV_D4RLMuJoCoSeqDataset(BaseDataset):
@@ -321,16 +324,26 @@ class RandomMuJoCoSeqDataset(BaseDataset):
 
 
         loader = DataLoader(dataset, batch_size=len(dataset), 
-                            collate_fn=lambda x:collate_fn(x,segment_size = 516), 
+                            collate_fn=lambda x:collate_fn(x,segment_size = 1016),
                             shuffle= True,num_workers=8)
         dataset = next(iter(loader))
-        
+
         observations, actions, rewards, timeouts, terminals = (
             dataset["observations"].astype(np.float32).reshape(-1,dataset["observations"].shape[-1]),
             dataset["actions"].astype(np.float32).reshape(-1,dataset["actions"].shape[-1]),
             dataset["rewards"].astype(np.float32).reshape(-1),
             dataset["truncations"].astype(np.float32).reshape(-1),
-            dataset["terminations"].astype(np.float32).reshape(-1))
+            dataset["terminations"].astype(np.float32).reshape(-1),
+            )
+        if dataset["infos"] is not None:
+            task = np.zeros((len(dataset["infos"]),dataset["infos"][0]["task"].shape[-1]),dtype=np.float32)
+            for i in range(len(dataset["infos"])):
+
+                task[i] = dataset["infos"][i]["task"]
+            task = task.reshape(-1)
+        else:
+            task = None
+
         self.stride = stride
 
         self.normalizers = {
@@ -345,12 +358,14 @@ class RandomMuJoCoSeqDataset(BaseDataset):
         self.seq_act = np.zeros((n_paths+1, max_path_length, self.a_dim), dtype=np.float32)
         self.seq_rew = np.zeros((n_paths+1, max_path_length, 1), dtype=np.float32)
         self.seq_val = np.zeros((n_paths+1, max_path_length, 1), dtype=np.float32)
+        self.seq_task = np.zeros((n_paths+1, max_path_length, 1), dtype=np.float32) if dataset["infos"] is not None else None
         self.indices = []
 
         ptr = 0
         path_idx = 0
         for i in range(timeouts.shape[0]):
             if timeouts[i] or terminals[i] or i == timeouts.shape[0] - 1:
+
                 path_length = i - ptr + 1
                 assert path_length <= max_path_length, f"current path length {path_length}"
 
@@ -363,7 +378,8 @@ class RandomMuJoCoSeqDataset(BaseDataset):
                 self.seq_obs[path_idx, :path_length] = normed_observations[ptr:i + 1]
                 self.seq_act[path_idx, :path_length] = actions[ptr:i + 1]
                 self.seq_rew[path_idx, :path_length] = rewards[ptr:i + 1][:, None]
-
+                if dataset["infos"] is not None:
+                    self.seq_task[path_idx, :path_length] = task[ptr:i + 1][:, None]
                 max_start = path_length - (horizon - 1) * stride - 1
                 self.indices += [(path_idx, start, start + (horizon - 1) * stride + 1) for start in range(max_start + 1)]
 
@@ -379,6 +395,8 @@ class RandomMuJoCoSeqDataset(BaseDataset):
         
         # val \in [-1, 1]
         self.seq_val = (self.seq_val - self.seq_val.min()) / (self.seq_val.max() - self.seq_val.min())
+        # rew \in [0, 1]
+        self.seq_rew = (self.seq_rew - self.seq_rew.min()) / (self.seq_rew.max() - self.seq_rew.min())
         if center_mapping:
             self.seq_val = self.seq_val * 2 - 1
         print(f"max normed discounted return: {self.seq_val.max()}")
@@ -400,6 +418,7 @@ class RandomMuJoCoSeqDataset(BaseDataset):
             'act': self.seq_act[path_idx, start:end:self.stride],
             'rew': self.seq_rew[path_idx, start:end:self.stride],
             'val': self.seq_val[path_idx, start],
+            'task_id': self.seq_task[path_idx, start] if self.seq_task is not None else None,
         }
 
         torch_data = dict_apply(data, torch.tensor)

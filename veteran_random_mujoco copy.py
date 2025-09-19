@@ -179,7 +179,7 @@ def pipeline(args):
     planner = ContinuousDiffusionSDE(
         nn_diffusion_planner, nn_condition=nn_condition_planner,
         fix_mask=fix_mask, loss_weight=loss_weight, classifier=classifier, ema_rate=args.planner_ema_rate,
-        device=args.device, predict_noise=args.planner_predict_noise, noise_schedule="linear")
+        device=args.device, predict_noise=args.planner_predict_noise, noise_schedule="linear",task_num = 40,guide_noise_scale=args.planner_guide_noise_scale)
     fix_mask = torch.zeros((args.task.planner_horizon, planner_dim))
     fix_mask[:args.task.history, :] = 1.
     fix_mask[args.task.history, :obs_dim] = 1.
@@ -217,7 +217,7 @@ def pipeline(args):
                 policy = ContinuousDiffusionSDE(
                     nn_diffusion_invdyn, nn_condition_invdyn, predict_noise=args.policy_predict_noise, noise_schedule="linear",
 
-                     ema_rate=args.policy_ema_rate, device=args.device,fix_mask=fix_mask)
+                     ema_rate=args.policy_ema_rate, device=args.device,fix_mask=fix_mask,task_num =  40,guide_noise_scale=args.planner_guide_noise_scale)
         else:
             invdyn = MlpInvDynamic(obs_dim, act_dim, 512, nn.Tanh(), {"lr": 2e-4}, device=args.device)
 
@@ -301,7 +301,7 @@ def pipeline(args):
                         weighted_regression_tensor = torch.exp( (planner_td_val - 1) * args.weight_factor)
                         log["avg_loss_planner"] += planner.update(planner_horizon_data, 
                                                                   weighted_regression_tensor=weighted_regression_tensor,
-                                                                  condition = planner_horizon_obs[:,args.task.history,:])['loss']
+                                                                  condition = planner_horizon_obs[:,args.task.history,:],task_id = planner_task)['loss']
                     else:
                         log["avg_loss_planner"] += planner.update(planner_horizon_data)['loss']
                 planner_lr_scheduler.step()
@@ -341,7 +341,7 @@ def pipeline(args):
                         if args.policy_net == "mlp":
                             log["bc_loss_policy"] += policy.update(policy_td_act, torch.cat([policy_td_obs, policy_td_next_obs], dim=-1))['loss']
                         elif args.policy_net == "transformer":
-                            log["bc_loss_policy"] += policy.update(policy_horizon_obs_action, torch.cat([policy_td_obs, policy_td_next_obs], dim=-1))['loss']
+                            log["bc_loss_policy"] += policy.update(policy_horizon_obs_action, torch.cat([policy_td_obs, policy_td_next_obs], dim=-1),task_id = planner_task)['loss']
                         policy_lr_scheduler.step()
                 else:    
                     if n_gradient_step <= args.invdyn_gradient_steps:
@@ -535,15 +535,12 @@ def pipeline(args):
                     obs_repeat = obs.unsqueeze(1).repeat(1, args.planner_num_candidates, 1).view(-1, obs_dim)
 
                     # sample trajectories
-                    planner_prior[:, args.task.history, :obs_dim] = obs_repeat
+                    planner_prior[:, len(obs_history), :obs_dim] = obs_repeat
                     # print(planner_prior)
-                    # warm_start_reference = planner_prior.clone()
-                    # warm_start_reference[:, args.task.history+1, :obs_dim] = next_obs_plan.unsqueeze(1).repeat(1, args.planner_num_candidates, 1).view(-1, obs_dim) if t > 0 else planner_prior[:, args.task.history, :obs_dim]
-
                     traj, log = planner.sample(
                         planner_prior, solver=args.planner_solver,
                         n_samples=args.num_envs * args.planner_num_candidates, sample_steps=args.planner_sampling_steps, use_ema=args.planner_use_ema,
-                        condition_cfg=obs_repeat, w_cfg=1.0, temperature=args.task.planner_temperature)
+                        condition_cfg=obs_repeat, w_cfg=1.0, temperature=args.task.planner_temperature,)
                     
                     # traj2, log2 = planner2.sample(
                     #     planner_prior, solver=args.planner_solver,
@@ -626,8 +623,7 @@ def pipeline(args):
                             if args.rebase_policy:
                                 next_obs_policy[:, :2] -= obs_policy[:, :2]
                                 obs_policy[:, :2] = 0
-                            # warm_start_reference = policy_prior.clone()
-                            # warm_start_reference[:, args.task.history, obs_dim:] = torch.tensor(act, device=args.device, dtype=torch.float32) if t > 0 else 0
+                            
                             act, log = policy.sample(
                                 policy_prior,
                                 solver=args.policy_solver,
@@ -833,13 +829,13 @@ if __name__ == "__main__":
     parser.add_argument('--planner_w_cfg', default=1.0, type=float, help='Planner w_cfg')
 
     # Main arguments
-    parser.add_argument('--pipeline_name', default="veteran_random_mujoco_test_deeper_network_with_noise_assignment", type=str, help='Pipeline name')
-    parser.add_argument('--mode', default="inference", type=str, help='Mode: train/inference/test/etc')
+    parser.add_argument('--pipeline_name', default="veteran_random_mujoco_test_deeper_network_with_noise_guidance", type=str, help='Pipeline name')
+    parser.add_argument('--mode', default="train", type=str, help='Mode: train/inference/test/etc')
     parser.add_argument('--seed', default=0, type=int, help='Random seed')
     parser.add_argument('--device', default="cuda:1", type=str, help='Device to use')
     parser.add_argument('--project', default="dadp", type=str, help='Log path')
     parser.add_argument('--group', default="transformer inverse dynamics", type=str, help='Log path')
-    parser.add_argument('--name', default="train and inference with 40 dynamics with pre assigned noise", type=str, help='Log path')
+    parser.add_argument('--name', default="train with 40 dynamics with pre assigned noise", type=str, help='Log path')
     parser.add_argument('--enable_wandb', default=True, type=bool, help='Enable wandb logging')
     parser.add_argument('--save_dir', default="results", type=str, help='Directory to save results')
 
