@@ -272,12 +272,12 @@ class RandomHumanoidEnv(MujocoEnv, utils.EzPickle):
 gym.envs.register(
         id="RandomHumanoid-v0",
         entry_point="%s:RandomHumanoidEnv" % __name__,
-        max_episode_steps=500
+        max_episode_steps=1000
 )
 
 gym.envs.register(
         id="RandomHumanoidNoisy-v0",
         entry_point="%s:RandomHumanoidEnv" % __name__,
-        max_episode_steps=500,
+        max_episode_steps=1000,
         kwargs={"noisy": True}
 )

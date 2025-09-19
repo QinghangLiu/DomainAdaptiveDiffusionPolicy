@@ -38,8 +38,10 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('--algo',           default="sac", type=str, help='Algorithm to use')
     parser.add_argument('--env',            default="RandomWalker2d-v0", type=str, help='Train gym env')
+    parser.add_argument('--env',            default="RandomWalker2d-v0", type=str, help='Train gym env')
     parser.add_argument('--lr',             default=None, type=float, help='Learning rate')
     parser.add_argument('--gamma',          default=0.99, type=float, help='gamma discount factor')
+    parser.add_argument('--now',            default=20, type=int, help='Number of cpus for parallelization')
     parser.add_argument('--now',            default=20, type=int, help='Number of cpus for parallelization')
     parser.add_argument('--gradient_steps', default=4, type=int, help='Number of gradient steps per update')
     parser.add_argument('--model_path',     default="./best_model/.zip", help='Train from scratch')
@@ -60,6 +62,8 @@ if __name__ == "__main__":
   
 
     # series_task = np.vstack([series_task,np.linspace(default_task,args.task, 10)])
+
+
 
 
 
@@ -92,6 +96,8 @@ if __name__ == "__main__":
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(device)
     if args.mode == "eval":
+        
+        model = SAC.load(f"./best_model/best_model_{args.env}_{np.zeros((len(default_task),))}.zip", env=par_env, device=f"cuda:{args.gpu}" if torch.cuda.is_available() else "cpu")
 
         accu_reward = 0
         frames = []
@@ -153,7 +159,7 @@ if __name__ == "__main__":
         task_str = "_".join(map(str, np.array(args.task).flatten()))
         imageio.mimsave(f"{video_path}/evaluation{timestamp}_task{task_str}.gif", frames, fps=30)
     elif args.mode == "data":
-
+        model = SAC.load(f"./best_model/best_model_{args.env}_{default_task[:6]}.zip", env=par_env, device=f"cuda:{args.gpu}" if torch.cuda.is_available() else "cpu")
         # env = DataCollector(env)
         task_list = default_task[np.newaxis,:]
         episodes = []
@@ -273,8 +279,29 @@ if __name__ == "__main__":
 
             
 
+        task_num = 1
+        trained_task = []
+        
+        for i in range(task_num):
+            
+            if not os.exists(f"./best_model/best_model_{args.env}_{np.zeros((len(default_task),))}.zip"):
+                task = default_task
+                task_index = np.zeros((len(default_task),))
+            else:
+                task = series_task[task_index,np.arange(len(default_task))]
+                task_index = np.random.choice(np.arange(1,series_task.shape[0]-1), size=len(default_task), replace=True)
+                
+            trained_task.append(task)
+
+            
+
             par_env.set_task(np.tile(task, (args.now,1)))
             print(f"Training on task: {task}")
+            model.learn(
+                            total_timesteps=200000,
+                            log_interval=10,
+
+                            )
             model.learn(
                             total_timesteps=200000,
                             log_interval=10,
@@ -295,6 +322,7 @@ if __name__ == "__main__":
             while not (0 < (cnt_accureward - max_reward)/max_reward < 1e-2):
                 max_reward = max(max_reward,cnt_accureward)
                 model.learn(
+                            total_timesteps=100000,
                             total_timesteps=100000,
                             log_interval=10,
 
@@ -328,6 +356,7 @@ if __name__ == "__main__":
 
                 obs = par_env.reset()
                 # random_action = 0
+                # random_action = 0
                 for _ in range(16):
                     action = np.random.uniform(low = -1,high = 1,size = (args.now,par_env.action_space.shape[0]))
                     obss = np.append(obss, obs[:, np.newaxis, :], axis=1)
@@ -335,6 +364,7 @@ if __name__ == "__main__":
                     actions = np.append(actions,action[:,np.newaxis,:], axis = 1)
                     rewards = np.append(rewards, np.zeros(args.now)[:, np.newaxis], axis=1)
                     terminations = np.append(terminations, done[:, np.newaxis], axis=1)
+                for _ in range(1000):
                 for _ in range(1000):
                     
                     # if np.random.rand() < 0.02 and random_action == 0:
@@ -377,6 +407,8 @@ if __name__ == "__main__":
                                                      observation_space=gymnasium.spaces.Box(low=-10, high=10, shape=(17,)),
                                                      action_space=gymnasium.spaces.Box(low=-1.0, high=1.0, shape=(6,)))
         model.save(args.model_path)
+        #save the trained tasks
+        
         #save the trained tasks
         
 
