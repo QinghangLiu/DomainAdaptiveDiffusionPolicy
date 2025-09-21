@@ -318,31 +318,46 @@ class RandomMuJoCoSeqDataset(BaseDataset):
             center_mapping: bool = True,
             stride: int = 1,
             full_traj_bonus: float = 0,
+            padding: int = 0,
     ):
         super().__init__()
 
 
 
         loader = DataLoader(dataset, batch_size=len(dataset), 
-                            collate_fn=lambda x:collate_fn(x,segment_size = 1016),
-                            shuffle= True,num_workers=8)
+                            collate_fn=lambda x:collate_fn(x,segment_size = 1000),
+                            shuffle= False,num_workers=8)
         dataset = next(iter(loader))
 
         observations, actions, rewards, timeouts, terminals = (
-            dataset["observations"].astype(np.float32).reshape(-1,dataset["observations"].shape[-1]),
-            dataset["actions"].astype(np.float32).reshape(-1,dataset["actions"].shape[-1]),
-            dataset["rewards"].astype(np.float32).reshape(-1),
-            dataset["truncations"].astype(np.float32).reshape(-1),
-            dataset["terminations"].astype(np.float32).reshape(-1),
+            dataset["observations"].astype(np.float32),
+            dataset["actions"].astype(np.float32),
+            dataset["rewards"].astype(np.float32),
+            dataset["truncations"].astype(np.float32),
+            dataset["terminations"].astype(np.float32),
             )
+        #padding
+        if padding > 0:
+            observations = np.pad(observations,((0,0),(padding,0),(0,0)),'edge',).reshape(-1,observations.shape[-1])
+            actions = np.pad(actions,((0,0),(padding,0),(0,0)),'constant',constant_values=0).reshape(-1,actions.shape[-1])
+            rewards = np.pad(rewards,((0,0),(padding,0)),'constant',constant_values=0  ).reshape(-1)
+            timeouts = np.pad(timeouts,((0,0),(padding,0)),'constant',constant_values=0).reshape(-1)
+            terminals = np.pad(terminals,((0,0),(padding,0)),'constant',constant_values=0).reshape(-1)
         if dataset["infos"] is not None:
-            task = np.zeros((len(dataset["infos"]),dataset["infos"][0]["task"].shape[-1]),dtype=np.float32)
-            for i in range(len(dataset["infos"])):
+            task_index = np.zeros((len(dataset["infos"]),dataset["infos"][0]["task_index"].shape[-1]+padding),dtype=np.float32)
+            self.task_list = [dataset["infos"][0]["task"]]
 
-                task[i] = dataset["infos"][i]["task"]
-            task = task.reshape(-1)
+            for i in range(len(dataset["infos"])):
+ 
+                task_index[i] = np.pad(dataset["infos"][i]["task_index"],(padding,0),"edge") if padding > 0 else dataset["infos"][i]["task_index"]
+                if np.any(dataset["infos"][i]["task"] != self.task_list[-1]):
+                    self.task_list.append(dataset["infos"][i]["task"])
+            self.task_list = np.array(self.task_list)
+
+            task_index = task_index.reshape(-1).astype(np.int32)
+            self.task_segment = np.zeros((self.task_list.shape[0]+1,),dtype=np.int32)
         else:
-            task = None
+            task_index = None
 
         self.stride = stride
 
@@ -358,7 +373,7 @@ class RandomMuJoCoSeqDataset(BaseDataset):
         self.seq_act = np.zeros((n_paths+1, max_path_length, self.a_dim), dtype=np.float32)
         self.seq_rew = np.zeros((n_paths+1, max_path_length, 1), dtype=np.float32)
         self.seq_val = np.zeros((n_paths+1, max_path_length, 1), dtype=np.float32)
-        self.seq_task = np.zeros((n_paths+1, max_path_length, 1), dtype=np.float32) if dataset["infos"] is not None else None
+        self.seq_task_index = np.zeros((n_paths+1, max_path_length, 1), dtype=np.float32) if dataset["infos"] is not None else None
         self.indices = []
 
         ptr = 0
@@ -378,11 +393,12 @@ class RandomMuJoCoSeqDataset(BaseDataset):
                 self.seq_obs[path_idx, :path_length] = normed_observations[ptr:i + 1]
                 self.seq_act[path_idx, :path_length] = actions[ptr:i + 1]
                 self.seq_rew[path_idx, :path_length] = rewards[ptr:i + 1][:, None]
-                if dataset["infos"] is not None:
-                    self.seq_task[path_idx, :path_length] = task[ptr:i + 1][:, None]
+
                 max_start = path_length - (horizon - 1) * stride - 1
                 self.indices += [(path_idx, start, start + (horizon - 1) * stride + 1) for start in range(max_start + 1)]
-
+                if dataset["infos"] is not None:
+                    self.seq_task_index[path_idx, :path_length] = task_index[ptr:i + 1][:, None]
+                    self.task_segment[task_index[i]+1] = len(self.indices)
                 ptr = i + 1
                 path_idx += 1
 
@@ -418,9 +434,40 @@ class RandomMuJoCoSeqDataset(BaseDataset):
             'act': self.seq_act[path_idx, start:end:self.stride],
             'rew': self.seq_rew[path_idx, start:end:self.stride],
             'val': self.seq_val[path_idx, start],
-            'task_id': self.seq_task[path_idx, start] if self.seq_task is not None else None,
+            'task_id': self.seq_task_index[path_idx, start] if self.seq_task_index is not None else None,
         }
 
         torch_data = dict_apply(data, torch.tensor)
 
         return torch_data
+    
+
+from torch.utils.data import Subset
+
+def split_dataset(dataset, split_ratio=[0.8,0.1,0.1], seed=42):
+    np.random.seed(seed)
+    indices = np.arange(dataset.task_list.shape[0])
+    np.random.shuffle(indices)
+    train_ratio = split_ratio[0] / (split_ratio[0] + split_ratio[1] + split_ratio[2])
+    val_ratio = split_ratio[1] / (split_ratio[0] + split_ratio[1] + split_ratio[2])
+    train_indices = []
+    val_indices = []
+    test_indices = []
+    split1 = int(len(indices) * train_ratio)
+    for i in range(len(indices)):
+        if i < split1:
+            train_indices += [j for j in range(dataset.task_segment[indices[i]],dataset.task_segment[indices[i]+1])]
+        elif i < split1 + int(len(indices) * val_ratio):
+            val_indices += [j for j in range(dataset.task_segment[indices[i]],dataset.task_segment[indices[i]+1])]
+        else:
+            test_indices += [j for j in range(dataset.task_segment[indices[i]],dataset.task_segment[indices[i]+1])]
+
+
+
+    train_set = Subset(dataset, train_indices)
+    train_task_list = dataset.task_list[indices[:split1]]
+    val_set = Subset(dataset, val_indices)
+    val_task_list = dataset.task_list[indices[split1:split1 + int(len(indices) * val_ratio)]]
+    test_set = Subset(dataset, test_indices)
+    test_task_list = dataset.task_list[indices[split1 + int(len(indices) * val_ratio):]]
+    return train_set, val_set, test_set

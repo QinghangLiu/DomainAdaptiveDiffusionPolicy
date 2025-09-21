@@ -14,7 +14,7 @@ from torch.optim.lr_scheduler import CosineAnnealingLR
 from torch.utils.data import DataLoader
 
 from cleandiffuser.classifier import CumRewClassifier
-from cleandiffuser.dataset.d4rl_mujoco_dataset import  D4RLMuJoCoTDDataset, RandomMuJoCoSeqDataset
+from cleandiffuser.dataset.d4rl_mujoco_dataset import  D4RLMuJoCoTDDataset, RandomMuJoCoSeqDataset,split_dataset
 from customwrappers.RandomVecEnv import RandomSubprocVecEnv
 from stable_baselines3.common.env_util import make_vec_env
 from cleandiffuser.dataset.dataset_utils import loop_dataloader, loop_two_dataloaders
@@ -22,7 +22,6 @@ from cleandiffuser.diffusion import ContinuousDiffusionSDE, DiscreteDiffusionSDE
 from cleandiffuser.invdynamic import MlpInvDynamic
 from cleandiffuser.nn_condition import MLPCondition, IdentityCondition
 from cleandiffuser.nn_diffusion import DiT1d, DVInvMlp
-from cleandiffuser.nn_diffusion.dvinvdit import DVInvDiT
 from cleandiffuser.nn_diffusion.dvinvdit import DVInvDiT
 from cleandiffuser.nn_classifier import HalfJannerUNet1d
 from cleandiffuser.nn_diffusion import JannerUNet1d
@@ -95,13 +94,14 @@ def pipeline(args):
         dataset, horizon=args.task.planner_horizon, discount=args.discount, 
         stride=args.task.stride, center_mapping=(args.guidance_type!="cfg"),
         terminal_penalty=args.terminal_penalty,max_path_length=args.task.max_path_length,
-        full_traj_bonus=args.full_traj_bonus
+        full_traj_bonus=args.full_traj_bonus,padding=args.task.history
     )
+
     policy_dataset = RandomMuJoCoSeqDataset(
         dataset, horizon=args.task.planner_horizon, discount=args.discount, 
         stride=args.task.stride, center_mapping=(args.guidance_type!="cfg"),
         terminal_penalty=args.terminal_penalty,max_path_length=args.task.max_path_length,
-        full_traj_bonus=args.full_traj_bonus
+        full_traj_bonus=args.full_traj_bonus,padding=args.task.history
     )
     planner_dataloader = DataLoader(
         planner_dataset, batch_size=args.batch_size, shuffle=True, num_workers=4, pin_memory=True, drop_last=True)
@@ -180,7 +180,7 @@ def pipeline(args):
     planner = ContinuousDiffusionSDE(
         nn_diffusion_planner, nn_condition=nn_condition_planner,
         fix_mask=fix_mask, loss_weight=loss_weight, classifier=classifier, ema_rate=args.planner_ema_rate,
-        device=args.device, predict_noise=args.planner_predict_noise, noise_schedule="linear")
+        device=args.device, predict_noise=args.planner_predict_noise, noise_schedule="linear",task_num = 40,guide_noise_scale=args.planner_guide_noise_scale)
     fix_mask = torch.zeros((args.task.planner_horizon, planner_dim))
     fix_mask[:args.task.history, :] = 1.
     fix_mask[args.task.history, :obs_dim] = 1.
@@ -218,7 +218,7 @@ def pipeline(args):
                 policy = ContinuousDiffusionSDE(
                     nn_diffusion_invdyn, nn_condition_invdyn, predict_noise=args.policy_predict_noise, noise_schedule="linear",
 
-                     ema_rate=args.policy_ema_rate, device=args.device,fix_mask=fix_mask)
+                     ema_rate=args.policy_ema_rate, device=args.device,fix_mask=fix_mask,task_num =  40,guide_noise_scale=args.planner_guide_noise_scale)
         else:
             invdyn = MlpInvDynamic(obs_dim, act_dim, 512, nn.Tanh(), {"lr": 2e-4}, device=args.device)
 
@@ -302,7 +302,7 @@ def pipeline(args):
                         weighted_regression_tensor = torch.exp( (planner_td_val - 1) * args.weight_factor)
                         log["avg_loss_planner"] += planner.update(planner_horizon_data, 
                                                                   weighted_regression_tensor=weighted_regression_tensor,
-                                                                  condition = planner_horizon_obs[:,args.task.history,:])['loss']
+                                                                  condition = planner_horizon_obs[:,args.task.history,:],task_id = planner_task)['loss']
                     else:
                         log["avg_loss_planner"] += planner.update(planner_horizon_data)['loss']
                 planner_lr_scheduler.step()
@@ -342,7 +342,7 @@ def pipeline(args):
                         if args.policy_net == "mlp":
                             log["bc_loss_policy"] += policy.update(policy_td_act, torch.cat([policy_td_obs, policy_td_next_obs], dim=-1))['loss']
                         elif args.policy_net == "transformer":
-                            log["bc_loss_policy"] += policy.update(policy_horizon_obs_action, torch.cat([policy_td_obs, policy_td_next_obs], dim=-1))['loss']
+                            log["bc_loss_policy"] += policy.update(policy_horizon_obs_action, torch.cat([policy_td_obs, policy_td_next_obs], dim=-1),task_id = planner_task)['loss']
                         policy_lr_scheduler.step()
                 else:    
                     if n_gradient_step <= args.invdyn_gradient_steps:
@@ -536,15 +536,12 @@ def pipeline(args):
                     obs_repeat = obs.unsqueeze(1).repeat(1, args.planner_num_candidates, 1).view(-1, obs_dim)
 
                     # sample trajectories
-                    planner_prior[:, args.task.history, :obs_dim] = obs_repeat
+                    planner_prior[:, len(obs_history), :obs_dim] = obs_repeat
                     # print(planner_prior)
-                    # warm_start_reference = planner_prior.clone()
-                    # warm_start_reference[:, args.task.history+1, :obs_dim] = next_obs_plan.unsqueeze(1).repeat(1, args.planner_num_candidates, 1).view(-1, obs_dim) if t > 0 else planner_prior[:, args.task.history, :obs_dim]
-
                     traj, log = planner.sample(
                         planner_prior, solver=args.planner_solver,
                         n_samples=args.num_envs * args.planner_num_candidates, sample_steps=args.planner_sampling_steps, use_ema=args.planner_use_ema,
-                        condition_cfg=obs_repeat, w_cfg=1.0, temperature=args.task.planner_temperature)
+                        condition_cfg=obs_repeat, w_cfg=1.0, temperature=args.task.planner_temperature,task_id = torch.zeros((args.num_envs * args.planner_num_candidates,),device=args.device,dtype=torch.int),)
                     
                     # traj2, log2 = planner2.sample(
                     #     planner_prior, solver=args.planner_solver,
@@ -627,8 +624,7 @@ def pipeline(args):
                             if args.rebase_policy:
                                 next_obs_policy[:, :2] -= obs_policy[:, :2]
                                 obs_policy[:, :2] = 0
-                            # warm_start_reference = policy_prior.clone()
-                            # warm_start_reference[:, args.task.history, obs_dim:] = torch.tensor(act, device=args.device, dtype=torch.float32) if t > 0 else 0
+                            
                             act, log = policy.sample(
                                 policy_prior,
                                 solver=args.policy_solver,
@@ -700,13 +696,13 @@ def pipeline(args):
         planner.load(save_path + f"planner_ckpt_{args.planner_ckpt}.pt")
         planner.eval()
         # load critic
-        if args.guidance_type=="MCSS":
-            critic_ckpt = torch.load(save_path + f"critic_ckpt_{args.critic_ckpt}.pt")
-            critic.load_state_dict(critic_ckpt["critic"])
-            critic.eval()
-        elif args.guidance_type=="cg":
-            planner.classifier.load(save_path + f"classifier_ckpt_{args.planner_ckpt}.pt")
-            planner.classifier.eval()
+        # if args.guidance_type=="MCSS":
+        #     critic_ckpt = torch.load(save_path + f"critic_ckpt_{args.critic_ckpt}.pt")
+        #     critic.load_state_dict(critic_ckpt["critic"])
+        #     critic.eval()
+        # elif args.guidance_type=="cg":
+        #     planner.classifier.load(save_path + f"classifier_ckpt_{args.planner_ckpt}.pt")
+        #     planner.classifier.eval()
         # load policy
         if args.pipeline_type == "separate":
             if args.use_diffusion_invdyn:
@@ -746,7 +742,7 @@ def pipeline(args):
                     traj, log = planner.sample(
                         planner_prior, solver=args.planner_solver,n_samples=args.batch_size,
                         sample_steps=args.planner_sampling_steps, use_ema=args.planner_use_ema,
-                        condition_cfg=obs_repeat, w_cfg=1.0, temperature=args.task.planner_temperature,)
+                        condition_cfg=obs_repeat, w_cfg=1.0, temperature=args.task.planner_temperature,task_id = planner_batch["task_id"].to(args.device) if "task_id" in planner_batch else None)
                     loss = F.mse_loss(traj[:,args.task.history+1:,:obs_dim], planner_horizon_data[:,args.task.history+1:,:obs_dim])
                     planner_loss += loss.item()
                     n_batch += 1
@@ -780,7 +776,7 @@ def pipeline(args):
                                 n_samples=args.batch_size,
                                 sample_steps=args.policy_sampling_steps,
                                 condition_cfg=torch.cat([obs_policy, next_obs_policy], dim=-1), w_cfg=1.0,
-                                use_ema=args.policy_use_ema, temperature=args.policy_temperature)
+                                use_ema=args.policy_use_ema, temperature=args.policy_temperature,task_id = planner_batch["task_id"].to(args.device) if "task_id" in planner_batch else None)
                             if args.policy_net == "transformer":
                                 # print(act[0,args.task.history,:])
                                 act = act[:, args.task.history, obs_dim:]
@@ -794,26 +790,27 @@ def pipeline(args):
                         invdyn_td_obs, invdyn_td_next_obs, invdyn_td_act = invdyn_horizon_obs[:,args.task.history,:], invdyn_horizon_obs[:,args.task.history+1,:], invdyn_horizon_action[:,args.task.history,:]
                         eval_log = invdyn.evaluate(invdyn_td_obs, invdyn_td_act, invdyn_td_next_obs)
                         policy_loss += eval_log['loss'].item()
+                else:
+                    policy_loss += F.mse_loss(traj[:,args.task.history,obs_dim:], planner_horizon_data[:,args.task.history,obs_dim:]).item()
                 if n_batch == 100:
                     break
-                if args.guidance_type=="MCSS":
-                    if args.pipeline_type=="separate":
-                        planner_horizon_data_critic = planner_horizon_obs
-                    else:  
-                        planner_horizon_data_critic = planner_horizon_obs_action
-                    val_pred_batch = critic(planner_horizon_data_critic)
-                    val_pred_batch = val_pred_batch.view(-1)
-                    val_loss += F.mse_loss(val_pred_batch, planner_td_val).item()
-                    val_pred += val_pred_batch.mean().item()
-                elif args.guidance_type=="cg":
-                    eval_log = planner.evaluate_classifier(planner_horizon_data, planner_td_val)
+                # if args.guidance_type=="MCSS":
+                #     if args.pipeline_type=="separate":
+                #         planner_horizon_data_critic = planner_horizon_obs
+                #     else:  
+                #         planner_horizon_data_critic = planner_horizon_obs_action
+                #     val_pred_batch = critic(planner_horizon_data_critic)
+                #     val_pred_batch = val_pred_batch.view(-1)
+                #     val_loss += F.mse_loss(val_pred_batch, planner_td_val).item()
+                #     val_pred += val_pred_batch.mean().item()
+                # elif args.guidance_type=="cg":
+                #     eval_log = planner.evaluate_classifier(planner_horizon_data, planner_td_val)
 
         print(f"Planner Loss: {planner_loss / (n_batch):.4f}")
         print(f"Policy Loss: {policy_loss / (n_batch):.4f}")
         if args.guidance_type=="MCSS":
             print(f"Critic Loss: {val_loss / (n_batch):.4f}, Val Pred: {val_pred / (n_batch):.4f}")
     else:
-
 
         raise ValueError(f"Invalid mode: {args.mode}")
 
@@ -835,13 +832,13 @@ if __name__ == "__main__":
     parser.add_argument('--planner_w_cfg', default=1.0, type=float, help='Planner w_cfg')
 
     # Main arguments
-    parser.add_argument('--pipeline_name', default="veteran_random_mujoco_test_deeper_network_with_noise_assignment", type=str, help='Pipeline name')
-    parser.add_argument('--mode', default="inference", type=str, help='Mode: train/inference/test/etc')
+    parser.add_argument('--pipeline_name', default="veteran_random_mujoco_with_noise_guidance_train_and_inference", type=str, help='Pipeline name')
+    parser.add_argument('--mode', default="train", type=str, help='Mode: train/inference/test/etc')
     parser.add_argument('--seed', default=0, type=int, help='Random seed')
-    parser.add_argument('--device', default="cuda:1", type=str, help='Device to use')
+    parser.add_argument('--device', default="cuda:0", type=str, help='Device to use')
     parser.add_argument('--project', default="dadp", type=str, help='Log path')
     parser.add_argument('--group', default="transformer inverse dynamics", type=str, help='Log path')
-    parser.add_argument('--name', default="train and inference with 40 dynamics with pre assigned noise", type=str, help='Log path')
+    parser.add_argument('--name', default="train with 40 dynamics with pre assigned noise during inference", type=str, help='Log path')
     parser.add_argument('--enable_wandb', default=True, type=bool, help='Enable wandb logging')
     parser.add_argument('--save_dir', default="results", type=str, help='Directory to save results')
 
@@ -866,7 +863,7 @@ if __name__ == "__main__":
     parser.add_argument('--planner_predict_noise', default=True, type=bool, help='Planner predict noise')
     parser.add_argument('--planner_next_obs_loss_weight', default=1, type=float, help='Planner next obs loss weight')
     parser.add_argument('--planner_ema_rate', default=0.9999, type=float, help='Planner EMA rate')
-    parser.add_argument('--planner_guide_noise_scale', default=0.001, type=float, help='Planner learning rate')
+    parser.add_argument('--planner_guide_noise_scale', default=1, type=float, help='Planner learning rate')
     parser.add_argument('--unet_dim', default=32, type=int, help='UNet dimension')
     parser.add_argument('--use_weighted_regression', default=1, type=int, help='Use weighted regression')
     parser.add_argument('--weight_factor', default=2, type=int, help='Weight factor')
@@ -896,7 +893,7 @@ if __name__ == "__main__":
     parser.add_argument('--num_envs', default=10, type=int, help='Number of environments')
     parser.add_argument('--num_episodes', default=1, type=int, help='Number of episodes')
     parser.add_argument('--planner_num_candidates', default=50, type=int, help='Planner number of candidates')
-    parser.add_argument('--planner_ckpt', default=700000, type=int, help='Planner checkpoint')
+    parser.add_argument('--planner_ckpt', default=1000000, type=int, help='Planner checkpoint')
     parser.add_argument('--critic_ckpt', default=200000, type=int, help='Critic checkpoint')
     parser.add_argument('--policy_ckpt', default=1000000, type=int, help='Policy checkpoint')
     parser.add_argument('--invdyn_ckpt', default=200000, type=int, help='Inverse dynamics checkpoint')

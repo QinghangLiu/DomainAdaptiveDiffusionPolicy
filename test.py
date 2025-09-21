@@ -38,10 +38,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('--algo',           default="sac", type=str, help='Algorithm to use')
     parser.add_argument('--env',            default="RandomWalker2d-v0", type=str, help='Train gym env')
-    parser.add_argument('--env',            default="RandomWalker2d-v0", type=str, help='Train gym env')
     parser.add_argument('--lr',             default=None, type=float, help='Learning rate')
     parser.add_argument('--gamma',          default=0.99, type=float, help='gamma discount factor')
-    parser.add_argument('--now',            default=20, type=int, help='Number of cpus for parallelization')
     parser.add_argument('--now',            default=20, type=int, help='Number of cpus for parallelization')
     parser.add_argument('--gradient_steps', default=4, type=int, help='Number of gradient steps per update')
     parser.add_argument('--model_path',     default="./best_model/.zip", help='Train from scratch')
@@ -159,7 +157,7 @@ if __name__ == "__main__":
         task_str = "_".join(map(str, np.array(args.task).flatten()))
         imageio.mimsave(f"{video_path}/evaluation{timestamp}_task{task_str}.gif", frames, fps=30)
     elif args.mode == "data":
-        model = SAC.load(f"./best_model/best_model_{args.env}_{default_task[:6]}.zip", env=par_env, device=f"cuda:{args.gpu}" if torch.cuda.is_available() else "cpu")
+        # model = SAC.load(f"./best_model/best_model_{args.env}_{default_task[:6]}.zip", env=par_env, device=f"cuda:{args.gpu}" if torch.cuda.is_available() else "cpu")
         # env = DataCollector(env)
         task_list = default_task[np.newaxis,:]
         episodes = []
@@ -178,6 +176,7 @@ if __name__ == "__main__":
                             "action_space": par_env.action_space
                         }
                     )
+                    task = default_task
                     print(f"Collecting data on task: {default_task}")
 
                 else:
@@ -195,13 +194,13 @@ if __name__ == "__main__":
                     done = np.zeros(args.now, dtype=bool)
                     obs = par_env.reset()
                     random_action = 0
-                    for _ in range(16):
-                        action = np.random.uniform(low = -1,high = 1,size = (args.now,par_env.action_space.shape[0]))
-                        obss = np.append(obss, obs[:, np.newaxis, :], axis=1)
-                        obs,reward,_,_ = par_env.step(action)
-                        actions = np.append(actions,action[:,np.newaxis,:], axis = 1)
-                        rewards = np.append(rewards, np.zeros(args.now)[:, np.newaxis], axis=1)
-                        terminations = np.append(terminations,np.zeros(args.now)[:, np.newaxis], axis=1)
+                    # for _ in range(16):
+                    #     action = np.random.uniform(low = -1,high = 1,size = (args.now,par_env.action_space.shape[0]))
+                    #     obss = np.append(obss, obs[:, np.newaxis, :], axis=1)
+                    #     obs,reward,_,_ = par_env.step(action)
+                    #     actions = np.append(actions,action[:,np.newaxis,:], axis = 1)
+                    #     rewards = np.append(rewards, np.zeros(args.now)[:, np.newaxis], axis=1)
+                    #     terminations = np.append(terminations,np.zeros(args.now)[:, np.newaxis], axis=1)
                     for _ in range(1000):
                         
                         # if np.random.rand() < 0.02 and random_action == 0:
@@ -236,7 +235,8 @@ if __name__ == "__main__":
 
                         truncations[-1] = 1
                         infos = {}
-                        infos['task'] = task_index * np.ones(obss.shape[1])
+                        infos['task_index'] = task_index * np.ones(obss.shape[1])
+                        infos['task'] = task
                         episodes.append(minari.data_collector.EpisodeBuffer(len(episodes),
                                                         observations=obss[j],
                                                         actions=actions[j],
@@ -323,7 +323,6 @@ if __name__ == "__main__":
                 max_reward = max(max_reward,cnt_accureward)
                 model.learn(
                             total_timesteps=100000,
-                            total_timesteps=100000,
                             log_interval=10,
 
                             )
@@ -365,7 +364,7 @@ if __name__ == "__main__":
                     rewards = np.append(rewards, np.zeros(args.now)[:, np.newaxis], axis=1)
                     terminations = np.append(terminations, done[:, np.newaxis], axis=1)
                 for _ in range(1000):
-                for _ in range(1000):
+
                     
                     # if np.random.rand() < 0.02 and random_action == 0:
                     #     random_action = 4

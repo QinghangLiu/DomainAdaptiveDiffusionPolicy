@@ -76,14 +76,21 @@ class BaseDiffusionSDE(DiffusionModel):
         super().__init__(
             nn_diffusion, nn_condition, fix_mask, loss_weight, classifier, grad_clip_norm,
             0, ema_rate, optim_params, device)
-    
+
         self.predict_noise = predict_noise
         self.epsilon = epsilon
         self.x_max = x_max.to(device) if isinstance(x_max, torch.Tensor) else x_max
         self.x_min = x_min.to(device) if isinstance(x_min, torch.Tensor) else x_min
 
         if task_num is not None:
-            self.guide_noise = np.load("trained_tasks_RandomWalker2d-v0_20250919-210548.npy")[:task_num] * guide_noise_scale
+            self.guide_noise_scale = guide_noise_scale
+            guide_noise = np.load("trained_tasks_RandomWalker2d-v0_20250919-210548.npy")[:task_num]
+            guide_noise = torch.tensor(guide_noise, dtype=torch.float32, device=device)
+            guide_noise = (guide_noise - guide_noise.mean(dim=0)) / (guide_noise.std(dim=0) + 1e-8)
+            self.guide_noise = guide_noise * guide_noise_scale
+            #change the shape of guide_noise to (task_num, fix_mask.shape[0], fix_mask.shape[1])
+            self.guide_noise = self.guide_noise.unsqueeze(1).repeat(1, fix_mask.shape[-2], fix_mask.shape[-1] // self.guide_noise.shape[1] + 1)[:,:, :fix_mask.shape[-1]]
+            # print(self.guide_noise)
         
 
     @property
@@ -742,7 +749,7 @@ class ContinuousDiffusionSDE(BaseDiffusionSDE):
 
         eps = torch.randn_like(x0) if eps is None else eps
         if task_id is not None and self.guide_noise is not None:
-            eps = eps + self.guide_noise[task_id.squeeze(-1).int(), ...]
+            eps = (eps + self.guide_noise[task_id.squeeze(-1).int(), ...])/np.sqrt(1 + self.guide_noise_scale)
         alpha, sigma = self.noise_schedule_funcs["forward"](t, **(self.noise_schedule_params or {}))
         alpha = at_least_ndim(alpha, x0.dim())
         sigma = at_least_ndim(sigma, x0.dim())
@@ -779,6 +786,7 @@ class ContinuousDiffusionSDE(BaseDiffusionSDE):
             # ------------------ others ------------------ #
             requires_grad: bool = False,
             preserve_history: bool = False,
+            task_id = None,
             **kwargs,
     ):
         """Sampling.
@@ -846,7 +854,9 @@ class ContinuousDiffusionSDE(BaseDiffusionSDE):
                 torch.ones((1,), device=self.device) * warm_start_forward_level, **(self.noise_schedule_params or {}))
             xt = warm_start_reference * fwd_alpha + fwd_sigma * torch.randn_like(warm_start_reference)
         else:
-            xt = torch.randn_like(prior) * temperature
+            xt = (torch.randn_like(prior) + self.guide_noise[task_id.squeeze(-1).int(), ...])/np.sqrt(1 + self.guide_noise_scale) * temperature \
+                if task_id is not None and self.guide_noise is not None \
+                else torch.randn_like(prior) * temperature  
         xt = xt * (1. - self.fix_mask) + prior * self.fix_mask
         if preserve_history:
             log["sample_history"][:, 0] = xt.cpu().numpy()
