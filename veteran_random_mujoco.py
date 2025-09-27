@@ -1,7 +1,7 @@
 import os
 
 import d4rl
-import gym
+import gymnasium as gym
 import argparse
 import hydra, wandb, uuid
 import numpy as np
@@ -96,7 +96,8 @@ def pipeline(args):
         terminal_penalty=args.terminal_penalty,max_path_length=args.task.max_path_length,
         full_traj_bonus=args.full_traj_bonus,padding=args.task.history
     )
-
+    planner_dataset.recover_environment(5)
+    ref = planner_dataset.get_ref_score(2)
     policy_dataset = RandomMuJoCoSeqDataset(
         dataset, horizon=args.task.planner_horizon, discount=args.discount, 
         stride=args.task.stride, center_mapping=(args.guidance_type!="cfg"),
@@ -115,9 +116,15 @@ def pipeline(args):
 
     # --------------- Network Architecture -----------------
     if args.planner_net == "transformer":
+        planner_attn_mask = torch.triu(torch.ones(args.task.planner_horizon, args.task.planner_horizon),diagonal=1).bool().to(args.device)
+
+        planner_attn_mask[:args.task.history, :] = True
+        planner_attn_mask.fill_diagonal_(False)
         nn_diffusion_planner = DiT1d(
             planner_dim, emb_dim=args.planner_emb_dim,
-            d_model=args.planner_d_model, n_heads=args.planner_d_model//32, depth=args.planner_depth, timestep_emb_type="fourier", dropout=0.1)
+            d_model=args.planner_d_model, n_heads=args.planner_d_model//32, depth=args.planner_depth, 
+            timestep_emb_type="fourier", dropout=0.1,
+            attn_mask=planner_attn_mask if args.attention_mask else None)
     elif args.planner_net == "unet":
         nn_diffusion_planner = JannerUNet1d(
             planner_dim, model_dim=args.unet_dim, emb_dim=args.unet_dim,
@@ -204,8 +211,15 @@ def pipeline(args):
                     x_min=-1. * torch.ones((1, act_dim), device=args.device),
                     diffusion_steps=args.policy_diffusion_steps, ema_rate=args.policy_ema_rate, device=args.device)
             elif args.policy_net == "transformer":
+
+                policy_attn_mask = torch.triu(torch.ones(args.task.history+1, args.task.history+1),diagonal = 1).bool().to(args.device)
+                
+                policy_attn_mask[:args.task.history, :] = True
+                policy_attn_mask.fill_diagonal_(False)
+
                 nn_diffusion_invdyn = DVInvDiT(obs_dim+act_dim, act_dim, emb_dim=args.planner_emb_dim,  
-                                            d_model=args.planner_d_model, n_heads=args.planner_d_model//32, depth=args.planner_depth, timestep_emb_type="fourier",dropout = 0.1).to(args.device)
+                                            d_model=args.planner_d_model, n_heads=args.planner_d_model//32, 
+                                            depth=args.planner_depth, timestep_emb_type="fourier",dropout = 0.1,attn_mask=policy_attn_mask if args.attention_mask else None).to(args.device)
                 nn_condition_invdyn = MLPCondition(
                     in_dim=2*obs_dim, out_dim=args.planner_emb_dim, hidden_dims=[args.planner_emb_dim, ], act=nn.SiLU(), dropout=0)
                 print(f"=============== Parameter Report of Policy ===================================")
@@ -218,7 +232,7 @@ def pipeline(args):
                 policy = ContinuousDiffusionSDE(
                     nn_diffusion_invdyn, nn_condition_invdyn, predict_noise=args.policy_predict_noise, noise_schedule="linear",
 
-                     ema_rate=args.policy_ema_rate, device=args.device,fix_mask=fix_mask,task_num =  40,guide_noise_scale=args.planner_guide_noise_scale)
+                     ema_rate=args.policy_ema_rate, device=args.device,fix_mask=fix_mask,task_num =  40,guide_noise_scale=args.policy_guide_noise_scale)
         else:
             invdyn = MlpInvDynamic(obs_dim, act_dim, 512, nn.Tanh(), {"lr": 2e-4}, device=args.device)
 
@@ -463,7 +477,7 @@ def pipeline(args):
             # load policy
             if args.pipeline_type == "separate":
                 if args.use_diffusion_invdyn:
-                    policy.load(save_path + f"policy_ckpt_{args.policy_ckpt}.pt")
+                    policy.load(save_path + f"policy_ckpt_{args.policy_ckpt} copy.pt")
                     policy.eval()
                 else:
                     invdyn.load(save_path + f"invdyn_ckpt_{args.invdyn_ckpt}.pt")
@@ -500,7 +514,7 @@ def pipeline(args):
         
 
         env_eval = make_vec_env(args.task.env_name, n_envs=args.num_envs, seed=None, vec_env_cls=RandomSubprocVecEnv)
-        # env_eval.set_task(np.tile(args.domain, (args.num_envs,1)))
+        env_eval.set_task(np.tile(args.domain, (args.num_envs,1)))
         print(env_eval.get_task())
         frames = []
             # env_eval = gym.vector.make(args.task.env_name, args.num_envs)
@@ -541,7 +555,7 @@ def pipeline(args):
                     traj, log = planner.sample(
                         planner_prior, solver=args.planner_solver,
                         n_samples=args.num_envs * args.planner_num_candidates, sample_steps=args.planner_sampling_steps, use_ema=args.planner_use_ema,
-                        condition_cfg=obs_repeat, w_cfg=1.0, temperature=args.task.planner_temperature,task_id = torch.zeros((args.num_envs * args.planner_num_candidates,),device=args.device,dtype=torch.int),)
+                        condition_cfg=obs_repeat, w_cfg=1.0, temperature=args.task.planner_temperature,task_id = 2*torch.ones((args.num_envs * args.planner_num_candidates,),device=args.device,dtype=torch.int),)
                     
                     # traj2, log2 = planner2.sample(
                     #     planner_prior, solver=args.planner_solver,
@@ -631,13 +645,15 @@ def pipeline(args):
                                 n_samples=args.num_envs,
                                 sample_steps=args.policy_sampling_steps,
                                 condition_cfg=torch.cat([obs_policy, next_obs_policy], dim=-1), w_cfg=1.0,
-                                use_ema=args.policy_use_ema, temperature=args.policy_temperature)
+                                use_ema=args.policy_use_ema, temperature=args.policy_temperature,
+                                task_id = 40*torch.zeros((args.num_envs,),device=args.device,dtype=torch.int),)
                             if args.policy_net == "transformer":
                                 # print(act[0,args.task.history,:])
                                 act = act[:, args.task.history, obs_dim:]
                             # act2 = traj2[:, len(obs_history), obs_dim:]
                             # err_act = torch.norm(act - act2, dim=-1) / (torch.norm(act2, dim=-1) + 1e-5)
                             # print(f'Action difference between diffusion policy and planner: {err_act.mean().item():.4f}')
+                            act = act.clamp(-1, 1)
                             obs_history.append(torch.concatenate((obs,act), dim=-1))
                             act = act.cpu().numpy()
                     else:
@@ -824,7 +840,7 @@ if __name__ == "__main__":
     parser.add_argument('--env_name', type=str, default="RandomWalker2d-v0", help='Environment name')
     parser.add_argument('--planner_horizon', type=int, default=20, help='Planner horizon')
     parser.add_argument('--history', type=int, default=16, help='History trajectory')
-    parser.add_argument('--dataset', type=str, default="taggedmix40dynamics_RandomWalker2d-v0", help="dataset name")
+    parser.add_argument('--dataset', type=str, default="RandomWalker2d/40dynamics-v2", help="dataset name")
     parser.add_argument('--stride', type=int, default=1, help='Stride for the dataset')
     parser.add_argument('--max_path_length', type=int, default=1016, help='Maximum path length')
     parser.add_argument('--planner_temperature', type=int, default=1, help='Planner temperature')
@@ -832,16 +848,16 @@ if __name__ == "__main__":
     parser.add_argument('--planner_w_cfg', default=1.0, type=float, help='Planner w_cfg')
 
     # Main arguments
-    parser.add_argument('--pipeline_name', default="veteran_random_mujoco_with_noise_guidance_train_and_inference", type=str, help='Pipeline name')
+    parser.add_argument('--pipeline_name', default="veteran_random_mujoco_with_noise_guidance_train_and_inference_triu_attention_mask", type=str, help='Pipeline name')
     parser.add_argument('--mode', default="train", type=str, help='Mode: train/inference/test/etc')
     parser.add_argument('--seed', default=0, type=int, help='Random seed')
     parser.add_argument('--device', default="cuda:0", type=str, help='Device to use')
     parser.add_argument('--project', default="dadp", type=str, help='Log path')
     parser.add_argument('--group', default="transformer inverse dynamics", type=str, help='Log path')
-    parser.add_argument('--name', default="train with 40 dynamics with pre assigned noise during inference", type=str, help='Log path')
+    parser.add_argument('--name', default="train with 40 dynamics with pre assigned noise during inference and attention mask", type=str, help='Log path')
     parser.add_argument('--enable_wandb', default=True, type=bool, help='Enable wandb logging')
     parser.add_argument('--save_dir', default="results", type=str, help='Directory to save results')
-
+    parser.add_argument('--attention_mask', default=True, type=bool, help='Use attention mask in transformer')
     # Guidance
     parser.add_argument('--guidance_type', default="MCSS", type=str, help='Guidance type: MCSS/cfg/cg')
     parser.add_argument('--planner_net', default="transformer", type=str, help='Planner network type')
@@ -853,7 +869,7 @@ if __name__ == "__main__":
     parser.add_argument('--terminal_penalty', default=0, type=float, help='Terminal penalty')
     parser.add_argument('--full_traj_bonus', default=0, type=float, help='Full trajectory bonus')
     parser.add_argument('--discount', default=0.997, type=float, help='Discount factor')
-    parser.add_argument('--domain', default=[7.525, 5.05 , 5.05 , 2.575, 2.575, 2.575, 2.575, 0.775, 0.775, 0.325, 0.325, 1.55 , 0.825], help='Dynamics')
+    parser.add_argument('--domain', default=[5.05 ,2.575 ,2.575, 7.525, 7.525, 5.05 , 2.575, 0.55,  0.55 , 0.775, 0.325 ,1.55 ,1.55 ], help='Dynamics')
     # Planner Config
     parser.add_argument('--planner_solver', default="ddim", type=str, help='Planner solver')
     parser.add_argument('--planner_emb_dim', default=256, type=int, help='Planner embedding dimension')
@@ -874,7 +890,7 @@ if __name__ == "__main__":
     parser.add_argument('--policy_diffusion_steps', default=10, type=int, help='Policy diffusion steps')
     parser.add_argument('--policy_sampling_steps', default=20, type=int, help='Policy sampling steps')
     parser.add_argument('--policy_predict_noise', default=True, type=bool, help='Policy predict noise')
-
+    parser.add_argument('--policy_guide_noise_scale', default=0.01, type=float, help='Planner learning rate')
     parser.add_argument('--policy_ema_rate', default=0.995, type=float, help='Policy EMA rate')
     parser.add_argument('--policy_learning_rate', default=0.0003, type=float, help='Policy learning rate')
     parser.add_argument('--critic_learning_rate', default=0.0003, type=float, help='Critic learning rate')

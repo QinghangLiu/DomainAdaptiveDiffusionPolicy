@@ -14,10 +14,10 @@ def modulate(x, shift, scale):
 class DiTBlock(nn.Module):
     """ A DiT block with adaptive layer norm zero (adaLN-Zero) conditioning. """
 
-    def __init__(self, hidden_size: int, n_heads: int, dropout: float = 0.0):
+    def __init__(self, hidden_size: int, n_heads: int, dropout: float = 0.0,attn_mask: Optional[torch.Tensor] = None):
         super().__init__()
         self.norm1 = nn.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6)
-        self.attn = nn.MultiheadAttention(hidden_size, n_heads, dropout, batch_first=True)
+        self.attn = nn.MultiheadAttention(hidden_size, n_heads, dropout, batch_first=True,)
         self.norm2 = nn.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6)
 
         def approx_gelu(): return nn.GELU(approximate="tanh")
@@ -27,11 +27,16 @@ class DiTBlock(nn.Module):
             nn.Linear(hidden_size * 4, hidden_size))
         self.adaLN_modulation = nn.Sequential(
             nn.SiLU(), nn.Linear(hidden_size, hidden_size * 6))
+        
+        self.attn_mask = attn_mask
 
     def forward(self, x: torch.Tensor, t: torch.Tensor):
         shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = self.adaLN_modulation(t).chunk(6, dim=1)
         x = modulate(self.norm1(x), shift_msa, scale_msa)
-        x = x + gate_msa.unsqueeze(1) * self.attn(x, x, x)[0]
+ 
+        x = x + gate_msa.unsqueeze(1) * self.attn(x, x, x, attn_mask=self.attn_mask)[0]
+        # weights = self.attn(x, x, x, attn_mask=self.attn_mask)[1]
+        # print(weights)
         x = x + gate_mlp.unsqueeze(1) * self.mlp(modulate(self.norm2(x), shift_mlp, scale_mlp))
         return x
 
@@ -60,7 +65,8 @@ class DiT1d(BaseNNDiffusion):
         depth: int = 12,
         dropout: float = 0.0,
         timestep_emb_type: str = "positional",
-        timestep_emb_params: Optional[dict] = None
+        timestep_emb_params: Optional[dict] = None,
+        attn_mask: Optional[torch.Tensor] = None,
     ):
         super().__init__(emb_dim, timestep_emb_type, timestep_emb_params)
         self.in_dim, self.emb_dim = in_dim, emb_dim
@@ -74,7 +80,7 @@ class DiT1d(BaseNNDiffusion):
         self.pos_emb_cache = None
 
         self.blocks = nn.ModuleList([
-            DiTBlock(d_model, n_heads, dropout) for _ in range(depth)])
+            DiTBlock(d_model, n_heads, dropout,attn_mask=attn_mask) for _ in range(depth)])
         self.final_layer = FinalLayer1d(d_model, in_dim)
         self.initialize_weights()
 

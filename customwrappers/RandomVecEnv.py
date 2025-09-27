@@ -10,7 +10,7 @@ from collections import OrderedDict
 from typing import Any, Callable, List, Optional, Sequence, Tuple, Type, Union
 import pdb
 
-import gym
+import gymnasium as gym
 import numpy as np
 
 from stable_baselines3.common.vec_env.base_vec_env import (
@@ -130,6 +130,7 @@ class RandomSubprocVecEnv(VecEnv):
         results = [remote.recv() for remote in self.remotes]
         self.waiting = False
         obs, rews, dones, infos = zip(*results)
+
         return _flatten_obs(obs, self.observation_space), np.stack(rews), np.stack(dones), infos
 
 
@@ -233,14 +234,15 @@ def _worker(
         try:
             cmd, data = remote.recv()
             if cmd == "step":
-                observation, reward, done, info = env.step(data)
+                observation, reward, terminated,truncated, info = env.step(data)
+                done = terminated or truncated
                 if done:
                     # save final observation where user can get it, then reset
                     info["terminal_observation"] = observation
                     observation = env.reset()
                 remote.send((observation, reward, done, info))
             elif cmd == "seed":
-                remote.send(env.seed(data))
+                remote.send(env.unwrapped.seed(data))
             elif cmd == "reset":
                 observation = env.reset()
                 remote.send(observation)
@@ -253,14 +255,14 @@ def _worker(
             elif cmd == "get_spaces":
                 remote.send((env.observation_space, env.action_space))
             elif cmd == "env_method":
-                method = getattr(env, data[0])
+                method = getattr(env.unwrapped, data[0])
                 remote.send(method(*data[1], **data[2]))
             elif cmd == "get_attr":
-                remote.send(getattr(env, data))
+                remote.send(getattr(env.unwrapped, data))
             elif cmd == "set_attr":
-                remote.send(setattr(env, data[0], data[1]))
+                remote.send(setattr(env.unwrapped, data[0], data[1]))
             elif cmd == "has_attr":
-                remote.send(hasattr(env, data))
+                remote.send(hasattr(env.unwrapped, data))
             elif cmd == "is_wrapped":
                 remote.send(is_wrapped(env, data))
             else:

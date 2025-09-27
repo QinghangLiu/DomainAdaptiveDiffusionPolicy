@@ -323,12 +323,13 @@ class RandomMuJoCoSeqDataset(BaseDataset):
         super().__init__()
 
 
+        self.dataset = dataset 
 
         loader = DataLoader(dataset, batch_size=len(dataset), 
-                            collate_fn=lambda x:collate_fn(x,segment_size = 1000),
+                            collate_fn=lambda x:collate_fn(x,segment_size = dataset.total_steps// dataset.total_episodes),
                             shuffle= False,num_workers=8)
         dataset = next(iter(loader))
-
+        
         observations, actions, rewards, timeouts, terminals = (
             dataset["observations"].astype(np.float32),
             dataset["actions"].astype(np.float32),
@@ -343,15 +344,25 @@ class RandomMuJoCoSeqDataset(BaseDataset):
             rewards = np.pad(rewards,((0,0),(padding,0)),'constant',constant_values=0  ).reshape(-1)
             timeouts = np.pad(timeouts,((0,0),(padding,0)),'constant',constant_values=0).reshape(-1)
             terminals = np.pad(terminals,((0,0),(padding,0)),'constant',constant_values=0).reshape(-1)
+        self.ref_min_scores = []
+        self.ref_max_scores = []
         if dataset["infos"] is not None:
             task_index = np.zeros((len(dataset["infos"]),dataset["infos"][0]["task_index"].shape[-1]+padding),dtype=np.float32)
             self.task_list = [dataset["infos"][0]["task"]]
-
+            ref_max_score = -np.inf
+            ref_min_score = None
             for i in range(len(dataset["infos"])):
  
                 task_index[i] = np.pad(dataset["infos"][i]["task_index"],(padding,0),"edge") if padding > 0 else dataset["infos"][i]["task_index"]
+
                 if np.any(dataset["infos"][i]["task"] != self.task_list[-1]):
                     self.task_list.append(dataset["infos"][i]["task"])
+                    self.ref_max_scores.append(ref_max_score)
+                    self.ref_min_scores.append(ref_min_score)
+                    ref_max_score = -np.inf
+                    ref_min_score = None
+                ref_max_score = max(ref_max_score,dataset["infos"][i]['ref_score'])
+                ref_min_score = min(ref_min_score,dataset["infos"][i]['ref_score']) if ref_min_score is not None else dataset["infos"][i]['ref_score']
             self.task_list = np.array(self.task_list)
 
             task_index = task_index.reshape(-1).astype(np.int32)
@@ -405,7 +416,7 @@ class RandomMuJoCoSeqDataset(BaseDataset):
         self.seq_val[:, -1] = self.seq_rew[:, -1]
         for i in reversed(range(max_path_length-1)):
             self.seq_val[:, i] = self.seq_rew[:, i] + discount * self.seq_val[:, i+1]
-        
+
         print(f"max discounted return: {self.seq_val.max()}")
         print(f"min discounted return: {self.seq_val.min()}")
         
@@ -440,7 +451,24 @@ class RandomMuJoCoSeqDataset(BaseDataset):
         torch_data = dict_apply(data, torch.tensor)
 
         return torch_data
+    def get_all_task(self):
+        return self.task_list
     
+    def recover_environment(self,task_id: int):
+
+        ''' recover the environment of a specific task id'''
+
+        env = self.dataset.recover_environment()
+        env.unwrapped.set_task(*self.task_list[task_id])
+        return env
+    def get_ref_score(self,task_id: int):
+
+        ''' recover the reference score of a specific task id
+            return (min_score,max_score)
+        '''
+
+        return self.ref_min_scores[task_id],self.ref_max_scores[task_id]
+
 
 from torch.utils.data import Subset
 

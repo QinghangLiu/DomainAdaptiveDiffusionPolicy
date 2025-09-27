@@ -14,8 +14,8 @@ import pdb
 from copy import deepcopy
 
 import numpy as np
-import gym
-from gym import utils
+import gymnasium as gym
+from gymnasium import utils
 from dr_envs.mujoco_locomotion.jinja_mujoco_env import MujocoEnv
 from scipy.stats import truncnorm
 
@@ -62,7 +62,7 @@ class RandomHumanoidEnv(MujocoEnv, utils.EzPickle):
 
         self.preferred_lr = 0.0001 # --algo Sac -t 5M
         self.reward_threshold = 2200
-
+        self.max_train_step = 4000000
 
 
     def get_search_bounds_mean(self, index):
@@ -178,6 +178,7 @@ class RandomHumanoidEnv(MujocoEnv, utils.EzPickle):
                 self._get_obs(),
                 reward,
                 done,
+                False,
                 dict(
                     reward_linvel=lin_vel_cost,
                     reward_quadctrl=-quad_ctrl_cost,

@@ -1,7 +1,7 @@
 from typing import Any, Dict, List, Optional, Tuple, Type, Union
 import pdb
 
-import gym
+import gymnasium as gym
 import numpy as np
 import torch
 from torch.distributions.beta import Beta

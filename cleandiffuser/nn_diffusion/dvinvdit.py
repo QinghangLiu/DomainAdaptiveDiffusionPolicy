@@ -18,7 +18,8 @@ class DVInvDiT(BaseNNDiffusion):
         depth: int = 12,
         dropout: float = 0.0,
         timestep_emb_type: str = "positional",
-        timestep_emb_params: Optional[dict] = None
+        timestep_emb_params: Optional[dict] = None,
+        attn_mask: Optional[torch.Tensor] = None,
     ):
         super().__init__(emb_dim, timestep_emb_type, timestep_emb_params)
         self.in_dim, self.emb_dim = in_dim, emb_dim
@@ -32,7 +33,7 @@ class DVInvDiT(BaseNNDiffusion):
         self.pos_emb_cache = None
 
         self.blocks = nn.ModuleList([
-            DiTBlock(d_model, n_heads, dropout) for _ in range(depth)])
+            DiTBlock(d_model, n_heads, dropout,attn_mask=attn_mask) for _ in range(depth)])
         self.final_layer = FinalLayer1d(d_model, in_dim)
         self.initialize_weights()
 

@@ -10,13 +10,17 @@ Randomizations:
 """
 
 import numpy as np
-import gym
-from gym import utils
+import gymnasium as gym
+from gymnasium import utils
 from dr_envs.mujoco_locomotion.jinja_mujoco_env import MujocoEnv
 from copy import deepcopy
 import pdb
 
 class RandomWalker2dEnv(MujocoEnv, utils.EzPickle):
+    metadata = {
+        "render_modes": ["rgb_array"],
+        "render_fps": 20,
+    }
     def __init__(self, noisy=False):
         self.original_lengths = np.array([.4, .45, 0.6, .2])
         self.model_args = {"size": list(self.original_lengths)}
@@ -48,12 +52,13 @@ class RandomWalker2dEnv(MujocoEnv, utils.EzPickle):
 
         self.preferred_lr = 0.0005
         self.reward_threshold = 2200
-
+        self.max_train_step = 2000000
+        self.least_train_step = 1000000
 
     def get_search_bounds_mean(self, index):
         """Get search bounds for the mean of the parameters optimized"""
         search_bounds_mean = {
-               'torso': (0.1, 10.0),
+               'torso': (0.1, 7.0),
                'thigh': (0.1, 10.0),
                'leg': (0.1, 10.0),
                'foot': (0.1, 10.0),
@@ -62,8 +67,8 @@ class RandomWalker2dEnv(MujocoEnv, utils.EzPickle):
                'foot_left': (0.1, 10.0),
 
                'torsosize': (0.1, 1.0),
-               'thighsize': (0.1, 1.0),
-               'legsize': (0.1, 1.0),
+               'thighsize': (0.1, 0.7),
+               'legsize': (0.1, 0.7),
                'footsize': (0.1, 1.0),
 
                'friction_right': (0.1, 3.0),
@@ -125,7 +130,7 @@ class RandomWalker2dEnv(MujocoEnv, utils.EzPickle):
 
         ob = self._get_obs()
 
-        return ob, reward, done, {}
+        return ob, reward, done, False,{}
 
     def _get_obs(self):
         qpos = self.sim.data.qpos
@@ -162,13 +167,14 @@ class RandomWalker2dEnv(MujocoEnv, utils.EzPickle):
         return self.sim.get_state()
 
 
-gym.envs.register(
+gym.register(
         id="RandomWalker2d-v0",
         entry_point="%s:RandomWalker2dEnv" % __name__,
         max_episode_steps=1000
 )
 
-gym.envs.register(
+
+gym.register(
         id="RandomWalker2dNoisy-v0",
         entry_point="%s:RandomWalker2dEnv" % __name__,
         max_episode_steps=1000,

@@ -85,8 +85,10 @@ class BaseDiffusionSDE(DiffusionModel):
         if task_num is not None:
             self.guide_noise_scale = guide_noise_scale
             guide_noise = np.load("trained_tasks_RandomWalker2d-v0_20250919-210548.npy")[:task_num]
+            # guide_noise = np.vstack([guide_noise,np.array([5.05,5.05 , 5.05 , 2.575 ,7.525 ,5.05 , 5.05 , 0.775 ,0.325 ,0.55 , 0.55 , 1.55 ,1.55 ])])
             guide_noise = torch.tensor(guide_noise, dtype=torch.float32, device=device)
             guide_noise = (guide_noise - guide_noise.mean(dim=0)) / (guide_noise.std(dim=0) + 1e-8)
+            # print(self.guide_noise)
             self.guide_noise = guide_noise * guide_noise_scale
             #change the shape of guide_noise to (task_num, fix_mask.shape[0], fix_mask.shape[1])
             self.guide_noise = self.guide_noise.unsqueeze(1).repeat(1, fix_mask.shape[-2], fix_mask.shape[-1] // self.guide_noise.shape[1] + 1)[:,:, :fix_mask.shape[-1]]

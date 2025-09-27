@@ -4,9 +4,9 @@ import pdb
 from os import path
 
 import numpy as np
-import gym
-from gym import error, spaces
-from gym.utils import seeding
+import gymnasium as gym
+from gymnasium import error, spaces
+from gymnasium.utils import seeding
 from scipy.stats import truncnorm
 
 from dr_envs.mujoco_locomotion.template_renderer import TemplateRenderer
@@ -70,8 +70,8 @@ class MujocoEnv(RandomEnv):
         self.endless = True
 
         action = self.action_space.sample()
-        observation, _reward, done, _info = self.step(action)
-        assert not done
+        observation, _reward, terminated,truncated, _info = self.step(action)
+        assert not (terminated or truncated)
 
         self._set_observation_space(observation)
 
@@ -126,9 +126,10 @@ class MujocoEnv(RandomEnv):
         pass
   
 
-    def reset(self):
+    def reset(self,seed=None, options=None):
         self.sim.reset()
         ob = self.reset_model()
+
         return ob
 
     def set_state(self, qpos, qvel):
